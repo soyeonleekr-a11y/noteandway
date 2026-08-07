@@ -8,10 +8,10 @@ import Papa from "papaparse";
 import {
   Plane, TrendingUp, Upload, Sparkles, FileSpreadsheet, RefreshCw,
   AlertCircle, CheckCircle2, Link2, Loader2, Trash2, Compass, MapPin,
-  Trophy, BarChart3,
+  Trophy, BarChart3, LogOut, Lock,
 } from "lucide-react";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { signInAnonymously } from "firebase/auth";
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { db, auth } from "./firebase.js";
 
 const PLATFORMS = ["여기어때", "마이리얼트립", "클룩"];
@@ -85,6 +85,11 @@ function normalizeProduct(prod) {
   const unitRevenue = prod.unitRevenue != null ? prod.unitRevenue : (qty ? totalRevenue / qty : totalRevenue);
   return { name: prod.name, qty, unitRevenue, totalRevenue };
 }
+// 상품명이 눈으로는 같아 보여도 공백/특수문자 차이로 다른 문자열일 수 있어서,
+// 합치는 기준(키)으로 쓸 때는 이 함수로 정규화해요. 화면에는 원래 이름을 그대로 보여줘요.
+function normalizeNameKey(name) {
+  return String(name || "").normalize("NFKC").replace(/\s+/g, " ").trim();
+}
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function currentMonth() { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; }
@@ -147,7 +152,46 @@ function EmptyState({ icon: Icon, title, desc }) {
   );
 }
 
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      setError("이메일 또는 비밀번호가 올바르지 않아요.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="app-shell login-shell">
+      <Style />
+      <form className="login-card" onSubmit={handleLogin}>
+        <div className="login-mark"><Lock size={20} /></div>
+        <div className="login-title">TRAVELOG DASHBOARD</div>
+        <div className="login-sub">본인만 접근할 수 있는 비공개 대시보드예요.</div>
+        <input className="text-input" type="email" placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+        <input className="text-input" type="password" placeholder="비밀번호" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        {error && <div className="error-box"><AlertCircle size={14} /> {error}</div>}
+        <button className="primary-btn big" type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
+          {loading ? <><Loader2 size={16} className="spin" /> 확인 중...</> : "로그인"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [platformData, setPlatformData] = useState({});
@@ -158,8 +202,10 @@ export default function App() {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    (async () => {
-      try { await signInAnonymously(auth); } catch (e) { console.error("[firebase auth] 익명 로그인 실패", e); }
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      setAuthChecked(true);
+      if (!u) { setLoaded(false); return; }
       const [pd, bd, pr, bn, ch] = await Promise.all([
         safeGet("platform-data"), safeGet("posts-data"), safeGet("post-records"),
         safeGet("blog-names"), safeGet("consulting-history"),
@@ -170,7 +216,8 @@ export default function App() {
       if (bn) setBlogNames(bn);
       if (ch) setConsultingHistory(ch);
       setLoaded(true);
-    })();
+    });
+    return () => unsubscribe();
   }, []);
 
   function showToast(msg, kind = "ok") {
@@ -216,6 +263,19 @@ export default function App() {
 
   const pieData = PLATFORMS.map((p) => ({ name: p, value: platformData[p]?.[selectedMonth]?.total || 0 }));
 
+  if (!authChecked) {
+    return (
+      <div className="app-shell loading-shell">
+        <Loader2 className="spin" size={22} /> <span style={{ marginLeft: 10 }}>불러오는 중...</span>
+        <Style />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen />;
+  }
+
   if (!loaded) {
     return (
       <div className="app-shell loading-shell">
@@ -235,6 +295,7 @@ export default function App() {
             <div className="brand-title">TRAVELOG DASHBOARD</div>
             <div className="brand-sub">블로그 운영 · 어필리에이트 매출 관제탑</div>
           </div>
+          <button className="logout-btn" onClick={() => signOut(auth)} title="로그아웃"><LogOut size={14} /></button>
         </div>
         <div className="boarding-strip">
           <span>DEPARTURE</span><span className="dot">•</span>
@@ -416,15 +477,17 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
 
       // 엑셀은 보통 한 줄 = 거래 1건이라 수량 열이 따로 없을 수 있어요.
       // 그래서 같은 상품명은 한 줄로 합치고, 수량 열이 없으면 등장 횟수를 판매수량으로 계산해요.
+      // (공백/특수문자 차이로 다른 문자열처럼 보이는 경우까지 대비해 정규화한 키로 합쳐요)
       const grouped = {};
       rows.forEach((r) => {
         const name = String(r[nameKey]).trim();
         if (!name) return;
+        const key = normalizeNameKey(name);
         const revenue = parseNumber(r[revKey]);
         const qty = qtyKey ? parseNumber(r[qtyKey]) || 1 : 1;
-        if (!grouped[name]) grouped[name] = { name, qty: 0, totalRevenue: 0 };
-        grouped[name].qty += qty;
-        grouped[name].totalRevenue += revenue;
+        if (!grouped[key]) grouped[key] = { name, qty: 0, totalRevenue: 0 };
+        grouped[key].qty += qty;
+        grouped[key].totalRevenue += revenue;
       });
       const products = Object.values(grouped).map((p) => ({
         ...p,
@@ -461,8 +524,20 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
 
   const sortedProducts = useMemo(() => {
     if (!current) return [];
-    const normalized = current.products.map(normalizeProduct);
-    const arr = [...normalized];
+    // 저장된 데이터에 같은 상품명이 여러 줄로 남아있을 수 있어서(예전 업로드 등),
+    // 화면에 보여줄 때도 한 번 더 정규화한 이름 기준으로 합쳐서 표시해요.
+    const grouped = {};
+    current.products.forEach((raw) => {
+      const p = normalizeProduct(raw);
+      const key = normalizeNameKey(p.name);
+      if (!grouped[key]) grouped[key] = { name: p.name, qty: 0, totalRevenue: 0 };
+      grouped[key].qty += p.qty;
+      grouped[key].totalRevenue += p.totalRevenue;
+    });
+    const arr = Object.values(grouped).map((p) => ({
+      ...p,
+      unitRevenue: p.qty ? p.totalRevenue / p.qty : p.totalRevenue,
+    }));
     arr.sort((a, b) => (sortDir === "desc" ? b[sortField] - a[sortField] : a[sortField] - b[sortField]));
     return arr;
   }, [current, sortField, sortDir]);
@@ -512,7 +587,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
               <thead><tr><th>순위</th><th>상품명</th><th>판매수량</th><th>개별 수익금</th><th>총 수익금</th></tr></thead>
               <tbody>
                 {visibleProducts.map((p, i) => (
-                  <tr key={p.name} className={i === 0 ? "top-row" : ""}>
+                  <tr key={`${p.name}-${i}`} className={i === 0 ? "top-row" : ""}>
                     <td>{i + 1}</td>
                     <td>{p.name}</td>
                     <td>{p.qty}</td>
@@ -880,7 +955,7 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
         if (scope !== "all" && m !== scope) return;
         (data.products || []).forEach((raw) => {
           const prod = normalizeProduct(raw);
-          const key = `${p}::${prod.name}`;
+          const key = `${p}::${normalizeNameKey(prod.name)}`;
           if (!map[key]) {
             const dest = matchDestination(prod.name);
             map[key] = {
@@ -1059,6 +1134,23 @@ function Style() {
         padding: 0 0 40px 0;
       }
       .loading-shell { display:flex; align-items:center; justify-content:center; height: 300px; color:#93A2BC; }
+      .login-shell { display:flex; align-items:center; justify-content:center; min-height: 100vh; }
+      .login-card {
+        background: #16273F; border: 1px solid #2A3F5C; border-radius: 12px; padding: 32px 28px;
+        width: 320px; display: flex; flex-direction: column; gap: 12px; align-items: center;
+      }
+      .login-mark {
+        width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, #E8A33D, #c9822a);
+        display: flex; align-items: center; justify-content: center; color: #0F1B2D; margin-bottom: 4px;
+      }
+      .login-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 0.5px; }
+      .login-sub { font-size: 12px; color: #93A2BC; text-align: center; margin-bottom: 8px; }
+      .login-card .text-input { width: 100%; min-width: 0; }
+      .logout-btn {
+        margin-left: auto; background: transparent; border: 1px solid #2A3F5C; color: #93A2BC;
+        width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+      }
+      .logout-btn:hover { color: #F4F1E8; border-color: #56698c; }
       .spin { animation: spin 1s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
 
