@@ -77,6 +77,14 @@ function matchProductType(text) {
   const found = PRODUCT_TYPES.find((p) => text.toLowerCase().includes(p.toLowerCase()));
   return found || null;
 }
+// 예전 방식(엑셀 한 줄 = 상품 하나, revenue 필드만 존재)으로 저장된 데이터도
+// 새 형태({name, qty, unitRevenue, totalRevenue})로 안전하게 변환해서 읽어요.
+function normalizeProduct(prod) {
+  const totalRevenue = prod.totalRevenue != null ? prod.totalRevenue : (prod.revenue || 0);
+  const qty = prod.qty != null ? prod.qty : 1;
+  const unitRevenue = prod.unitRevenue != null ? prod.unitRevenue : (qty ? totalRevenue / qty : totalRevenue);
+  return { name: prod.name, qty, unitRevenue, totalRevenue };
+}
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 function currentMonth() { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; }
@@ -382,8 +390,14 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
   const [platform, setPlatform] = useState(PLATFORMS[0]);
   const [month, setMonth] = useState(currentMonth());
   const [parsing, setParsing] = useState(false);
+  const [sortField, setSortField] = useState("totalRevenue");
+  const [sortDir, setSortDir] = useState("desc");
+  const [showAll, setShowAll] = useState(false);
+  const PAGE_SIZE = 30;
 
   const current = platformData[platform]?.[month];
+
+  useEffect(() => { setShowAll(false); }, [platform, month]);
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -399,19 +413,29 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const revKey = findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
       const qtyKey = findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
       if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
-      const products = rows
-        .map((r) => ({
-          name: String(r[nameKey]).trim(),
-          revenue: parseNumber(r[revKey]),
-          qty: qtyKey ? parseNumber(r[qtyKey]) : null,
-        }))
-        .filter((p) => p.name)
-        .sort((a, b) => b.revenue - a.revenue);
-      const total = products.reduce((s, p) => s + p.revenue, 0);
+
+      // 엑셀은 보통 한 줄 = 거래 1건이라 수량 열이 따로 없을 수 있어요.
+      // 그래서 같은 상품명은 한 줄로 합치고, 수량 열이 없으면 등장 횟수를 판매수량으로 계산해요.
+      const grouped = {};
+      rows.forEach((r) => {
+        const name = String(r[nameKey]).trim();
+        if (!name) return;
+        const revenue = parseNumber(r[revKey]);
+        const qty = qtyKey ? parseNumber(r[qtyKey]) || 1 : 1;
+        if (!grouped[name]) grouped[name] = { name, qty: 0, totalRevenue: 0 };
+        grouped[name].qty += qty;
+        grouped[name].totalRevenue += revenue;
+      });
+      const products = Object.values(grouped).map((p) => ({
+        ...p,
+        unitRevenue: p.qty ? p.totalRevenue / p.qty : p.totalRevenue,
+      }));
+      if (!products.length) throw new Error("읽을 수 있는 상품 데이터가 없어요");
+      const total = products.reduce((s, p) => s + p.totalRevenue, 0);
 
       const next = { ...platformData, [platform]: { ...(platformData[platform] || {}), [month]: { products, total } } };
       await updatePlatformData(next);
-      showToast(`${platform} · ${formatMonthLabel(month)} 매출 ${products.length}건 반영 완료`);
+      showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료`);
     } catch (err) {
       showToast(err.message || "엑셀 파일을 읽는 데 실패했어요", "err");
     } finally {
@@ -435,6 +459,17 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
     return row;
   });
 
+  const sortedProducts = useMemo(() => {
+    if (!current) return [];
+    const normalized = current.products.map(normalizeProduct);
+    const arr = [...normalized];
+    arr.sort((a, b) => (sortDir === "desc" ? b[sortField] - a[sortField] : a[sortField] - b[sortField]));
+    return arr;
+  }, [current, sortField, sortDir]);
+
+  const visibleProducts = showAll ? sortedProducts : sortedProducts.slice(0, PAGE_SIZE);
+  const hiddenCount = sortedProducts.length - visibleProducts.length;
+
   return (
     <div className="tab-body">
       <h2 className="section-title"><TrendingUp size={18} /> 플랫폼 매출 업로드</h2>
@@ -456,24 +491,42 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
             <button className="ghost-btn" onClick={handleClear}><Trash2 size={14} /> 이 달 데이터 삭제</button>
           )}
         </div>
-        <div className="hint">헤더에 <b>상품명</b>과 <b>수익금(매출)</b> 열이 있으면 자동 인식해요. 수량 열이 있으면 함께 표시돼요.</div>
+        <div className="hint">헤더에 <b>상품명</b>과 <b>수익금(매출)</b> 열이 있으면 자동 인식해요. 같은 상품명은 자동으로 합쳐지고, 수량 열이 없으면 거래 건수를 판매수량으로 계산해요.</div>
 
         {current ? (
           <div className="rev-summary">
-            <div className="rev-total">{platform} · {formatMonthLabel(month)} 총매출 <SplitNumber value={formatWon(current.total)} size="sm" /></div>
+            <div className="row-between" style={{ marginBottom: 10 }}>
+              <div className="rev-total">{platform} · {formatMonthLabel(month)} 총매출 <SplitNumber value={formatWon(current.total)} size="sm" /></div>
+              <select
+                className="select"
+                value={`${sortField}-${sortDir}`}
+                onChange={(e) => { const [f, d] = e.target.value.split("-"); setSortField(f); setSortDir(d); }}
+              >
+                <option value="totalRevenue-desc">총 수익금 높은순</option>
+                <option value="totalRevenue-asc">총 수익금 낮은순</option>
+                <option value="qty-desc">판매수량 많은순</option>
+                <option value="qty-asc">판매수량 적은순</option>
+              </select>
+            </div>
             <table className="table">
-              <thead><tr><th>순위</th><th>상품명</th><th>판매수량</th><th>수익금</th></tr></thead>
+              <thead><tr><th>순위</th><th>상품명</th><th>판매수량</th><th>개별 수익금</th><th>총 수익금</th></tr></thead>
               <tbody>
-                {current.products.map((p, i) => (
-                  <tr key={i} className={i === 0 ? "top-row" : ""}>
+                {visibleProducts.map((p, i) => (
+                  <tr key={p.name} className={i === 0 ? "top-row" : ""}>
                     <td>{i + 1}</td>
                     <td>{p.name}</td>
-                    <td>{p.qty !== null ? p.qty : "-"}</td>
-                    <td>{formatWon(p.revenue)}</td>
+                    <td>{p.qty}</td>
+                    <td>{formatWon(p.unitRevenue)}</td>
+                    <td>{formatWon(p.totalRevenue)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {sortedProducts.length > PAGE_SIZE && (
+              <button className="ghost-btn" style={{ marginTop: 10 }} onClick={() => setShowAll(!showAll)}>
+                {showAll ? "접기" : `나머지 ${hiddenCount}개 더보기`}
+              </button>
+            )}
           </div>
         ) : (
           <EmptyState icon={FileSpreadsheet} title="이 달 데이터가 아직 없어요" desc="플랫폼에서 받은 정산 엑셀을 업로드하면 상품별 수익이 정리돼요." />
@@ -818,22 +871,29 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
 function InsightTab({ months, platformData, postRecords, blogNames }) {
   const [scope, setScope] = useState("all");
 
+  // 같은 상품(플랫폼+상품명)이 여러 달에 걸쳐 등장해도 하나로 합쳐서 중복 없이 집계해요.
   const allProducts = useMemo(() => {
-    const list = [];
+    const map = {};
     PLATFORMS.forEach((p) => {
       const monthsObj = platformData[p] || {};
       Object.entries(monthsObj).forEach(([m, data]) => {
         if (scope !== "all" && m !== scope) return;
-        (data.products || []).forEach((prod) => {
-          const dest = matchDestination(prod.name);
-          list.push({
-            name: prod.name, revenue: prod.revenue, platform: p, month: m,
-            region: dest ? dest.region : "기타", destination: dest ? dest.name : "기타",
-          });
+        (data.products || []).forEach((raw) => {
+          const prod = normalizeProduct(raw);
+          const key = `${p}::${prod.name}`;
+          if (!map[key]) {
+            const dest = matchDestination(prod.name);
+            map[key] = {
+              name: prod.name, platform: p, qty: 0, totalRevenue: 0,
+              region: dest ? dest.region : "기타", destination: dest ? dest.name : "기타",
+            };
+          }
+          map[key].qty += prod.qty;
+          map[key].totalRevenue += prod.totalRevenue;
         });
       });
     });
-    return list;
+    return Object.values(map);
   }, [platformData, scope]);
 
   const allPosts = useMemo(() => {
@@ -848,7 +908,8 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
     return list;
   }, [postRecords, blogNames, scope]);
 
-  const revenueTop10 = useMemo(() => [...allProducts].sort((a, b) => b.revenue - a.revenue).slice(0, 10), [allProducts]);
+  const revenueTop10 = useMemo(() => [...allProducts].sort((a, b) => b.totalRevenue - a.totalRevenue).slice(0, 10), [allProducts]);
+  const qtyTop10 = useMemo(() => [...allProducts].sort((a, b) => b.qty - a.qty).slice(0, 10), [allProducts]);
   const viewsTop10 = useMemo(() => [...allPosts].sort((a, b) => b.views - a.views).slice(0, 10), [allPosts]);
 
   const compositeTop10 = useMemo(() => {
@@ -856,7 +917,7 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
     allProducts.forEach((p) => {
       const key = `${p.region}-${p.destination}`;
       if (!map[key]) map[key] = { region: p.region, destination: p.destination, revenue: 0, views: 0, productCount: 0, postCount: 0 };
-      map[key].revenue += p.revenue;
+      map[key].revenue += p.totalRevenue;
       map[key].productCount += 1;
     });
     allPosts.forEach((r) => {
@@ -897,16 +958,37 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
             <div className="panel-title">💰 팔린 금액 TOP 10 — 나라/상품</div>
             {revenueTop10.length ? (
               <table className="table">
-                <thead><tr><th>순위</th><th>지역</th><th>나라/지역</th><th>상품명</th><th>플랫폼</th><th>수익금</th></tr></thead>
+                <thead><tr><th>순위</th><th>지역</th><th>나라/지역</th><th>상품명</th><th>플랫폼</th><th>총 수익금</th></tr></thead>
                 <tbody>
                   {revenueTop10.map((p, i) => (
-                    <tr key={i} className={i === 0 ? "top-row" : ""}>
+                    <tr key={`${p.platform}-${p.name}`} className={i === 0 ? "top-row" : ""}>
                       <td>{i + 1}</td>
                       <td><span className={regionBadge(p.region)}>{p.region}</span></td>
                       <td>{p.destination}</td>
                       <td>{p.name}</td>
                       <td>{p.platform}</td>
-                      <td>{formatWon(p.revenue)}</td>
+                      <td>{formatWon(p.totalRevenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <EmptyState icon={TrendingUp} title="매출 데이터가 없어요" desc="플랫폼 매출 탭에서 엑셀을 업로드해주세요." />}
+          </div>
+
+          <div className="panel">
+            <div className="panel-title">📦 팔린 개수 TOP 10 — 나라/상품</div>
+            {qtyTop10.length ? (
+              <table className="table">
+                <thead><tr><th>순위</th><th>지역</th><th>나라/지역</th><th>상품명</th><th>플랫폼</th><th>판매수량</th></tr></thead>
+                <tbody>
+                  {qtyTop10.map((p, i) => (
+                    <tr key={`${p.platform}-${p.name}`} className={i === 0 ? "top-row" : ""}>
+                      <td>{i + 1}</td>
+                      <td><span className={regionBadge(p.region)}>{p.region}</span></td>
+                      <td>{p.destination}</td>
+                      <td>{p.name}</td>
+                      <td>{p.platform}</td>
+                      <td>{p.qty.toLocaleString("ko-KR")}건</td>
                     </tr>
                   ))}
                 </tbody>
