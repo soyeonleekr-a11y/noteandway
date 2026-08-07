@@ -8,10 +8,10 @@ import Papa from "papaparse";
 import {
   Plane, TrendingUp, Upload, Sparkles, FileSpreadsheet, RefreshCw,
   AlertCircle, CheckCircle2, Link2, Loader2, Trash2, Compass, MapPin,
-  Trophy, BarChart3, LogOut, Lock,
+  Trophy, BarChart3, LogOut, Dog,
 } from "lucide-react";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { signInAnonymously } from "firebase/auth";
 import { db, auth } from "./firebase.js";
 
 const PLATFORMS = ["여기어때", "마이리얼트립", "클룩"];
@@ -121,6 +121,32 @@ function normalizeMonth(raw) {
   if (!m) return null;
   return `${m[1]}-${pad2(parseInt(m[2], 10))}`;
 }
+// 엑셀의 게시 날짜 셀(Date 객체 또는 "2026-07-15" / "2026.7.15" 등 문자열)을 'YYYY-MM-DD'로 통일해요.
+function parseDateValue(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  if (raw instanceof Date && !isNaN(raw)) {
+    return `${raw.getFullYear()}-${pad2(raw.getMonth() + 1)}-${pad2(raw.getDate())}`;
+  }
+  const s = String(raw).trim();
+  const m = s.match(/(\d{4})[.\-\/년]\s*(\d{1,2})[.\-\/월]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  const d = new Date(s);
+  return isNaN(d) ? null : `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+// 게시일로부터 오늘까지 경과일(게시 당일도 1일로 계산)과 일평균 조회수를 계산해요.
+// 갓 올라온 글은 조회수가 낮아도 경과일이 짧으니 일평균으로 보면 공정하게 비교돼요.
+function daysSincePublish(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (isNaN(d)) return null;
+  const diff = Math.floor((Date.now() - d.getTime()) / 86400000) + 1;
+  return diff > 0 ? diff : 1;
+}
+function dailyAvgViews(views, dateStr) {
+  const days = daysSincePublish(dateStr);
+  if (!days) return null;
+  return views / days;
+}
 
 // Firestore의 "dashboardData" 컬렉션에 문서 하나당 값 하나씩 저장 (JSON 문자열 변환 불필요)
 async function safeGet(key) {
@@ -152,46 +178,50 @@ function EmptyState({ icon: Icon, title, desc }) {
   );
 }
 
-function LoginScreen() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
+const DOG_BREEDS = [
+  { id: "spotted", label: "바둑이" },
+  { id: "welsh", label: "웰시" },
+  { id: "retriever", label: "리트리버" },
+  { id: "pomeranian", label: "포메라니안" },
+];
 
-  async function handleLogin(e) {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
-      setError("이메일 또는 비밀번호가 올바르지 않아요.");
-    } finally {
-      setLoading(false);
+function PatternGate({ onUnlock }) {
+  const [count, setCount] = useState(0);
+
+  function handleClick(id) {
+    if (id === "spotted") {
+      const next = count + 1;
+      setCount(next);
+      if (next >= 3) onUnlock();
+    } else {
+      setCount(0);
     }
   }
 
   return (
     <div className="app-shell login-shell">
       <Style />
-      <form className="login-card" onSubmit={handleLogin}>
-        <div className="login-mark"><Lock size={20} /></div>
+      <div className="login-card gate-card">
         <div className="login-title">TRAVELOG DASHBOARD</div>
-        <div className="login-sub">본인만 접근할 수 있는 비공개 대시보드예요.</div>
-        <input className="text-input" type="email" placeholder="이메일" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-        <input className="text-input" type="password" placeholder="비밀번호" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        {error && <div className="error-box"><AlertCircle size={14} /> {error}</div>}
-        <button className="primary-btn big" type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
-          {loading ? <><Loader2 size={16} className="spin" /> 확인 중...</> : "로그인"}
-        </button>
-      </form>
+        <div className="login-sub">마음에 드는 강아지를 골라보세요 🐾</div>
+        <div className="dog-row">
+          {DOG_BREEDS.map((b) => (
+            <button key={b.id} className="dog-btn" onClick={() => handleClick(b.id)} type="button">
+              <span className={`dog-icon dog-${b.id}`}><Dog size={26} /></span>
+              <span className="dog-label">{b.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="gate-dots">
+          {[0, 1, 2].map((i) => <span key={i} className={`gate-dot ${i < count ? "filled" : ""}`} />)}
+        </div>
+      </div>
     </div>
   );
 }
 
 export default function App() {
-  const [authChecked, setAuthChecked] = useState(false);
-  const [user, setUser] = useState(null);
+  const [unlocked, setUnlocked] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [platformData, setPlatformData] = useState({});
@@ -202,10 +232,9 @@ export default function App() {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      setAuthChecked(true);
-      if (!u) { setLoaded(false); return; }
+    if (!unlocked) return;
+    (async () => {
+      try { await signInAnonymously(auth); } catch (e) { console.error("[firebase auth] 익명 로그인 실패", e); }
       const [pd, bd, pr, bn, ch] = await Promise.all([
         safeGet("platform-data"), safeGet("posts-data"), safeGet("post-records"),
         safeGet("blog-names"), safeGet("consulting-history"),
@@ -216,9 +245,8 @@ export default function App() {
       if (bn) setBlogNames(bn);
       if (ch) setConsultingHistory(ch);
       setLoaded(true);
-    });
-    return () => unsubscribe();
-  }, []);
+    })();
+  }, [unlocked]);
 
   function showToast(msg, kind = "ok") {
     setToast({ msg, kind });
@@ -263,17 +291,8 @@ export default function App() {
 
   const pieData = PLATFORMS.map((p) => ({ name: p, value: platformData[p]?.[selectedMonth]?.total || 0 }));
 
-  if (!authChecked) {
-    return (
-      <div className="app-shell loading-shell">
-        <Loader2 className="spin" size={22} /> <span style={{ marginLeft: 10 }}>불러오는 중...</span>
-        <Style />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginScreen />;
+  if (!unlocked) {
+    return <PatternGate onUnlock={() => setUnlocked(true)} />;
   }
 
   if (!loaded) {
@@ -295,7 +314,7 @@ export default function App() {
             <div className="brand-title">TRAVELOG DASHBOARD</div>
             <div className="brand-sub">블로그 운영 · 어필리에이트 매출 관제탑</div>
           </div>
-          <button className="logout-btn" onClick={() => signOut(auth)} title="로그아웃"><LogOut size={14} /></button>
+          <button className="logout-btn" onClick={() => setUnlocked(false)} title="잠그기"><LogOut size={14} /></button>
         </div>
         <div className="boarding-strip">
           <span>DEPARTURE</span><span className="dot">•</span>
@@ -631,8 +650,12 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
   const [postsInput, setPostsInput] = useState("");
   const [viewsInput, setViewsInput] = useState("");
   const [parsing, setParsing] = useState(false);
+  const [showAllPosts, setShowAllPosts] = useState(false);
+  const POST_PAGE_SIZE = 30;
 
   useEffect(() => { setBlog(blogNames[0]); }, [blogNames.join("|")]);
+
+  useEffect(() => { setShowAllPosts(false); }, [blog, month]);
 
   useEffect(() => {
     const d = postsData[blog]?.[month];
@@ -658,7 +681,7 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
     setParsing(true);
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       if (!rows.length) throw new Error("빈 파일이에요");
@@ -666,6 +689,7 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
       const viewsKey = findKey(rows[0], ["조회", "views", "Views"]);
       const platformKey = findKey(rows[0], ["매체", "플랫폼", "platform", "Platform"]);
       const purposeKey = findKey(rows[0], ["목적", "purpose", "Purpose"]);
+      const dateKey = findKey(rows[0], ["게시일", "게시날짜", "발행일", "발행날짜", "날짜", "date", "Date"]);
       if (!titleKey || !viewsKey) throw new Error("글 제목 / 조회수 열을 찾을 수 없어요");
 
       const records = rows
@@ -677,6 +701,7 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
             views: parseNumber(r[viewsKey]),
             platform: platformKey ? String(r[platformKey]).trim() : "",
             purpose: purposeKey ? String(r[purposeKey]).trim() : "",
+            publishDate: dateKey ? parseDateValue(r[dateKey]) : null,
             region: dest ? dest.region : "기타",
             destination: dest ? dest.name : "기타",
             productType: matchProductType(title) || "-",
@@ -719,6 +744,25 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
       .sort((a, b) => b.count - a.count);
   }, [records]);
 
+  // 게시일이 있는 글은 경과일 대비 일평균 조회수로 정렬해서, 갓 올라온 글도 공정하게 비교돼요.
+  const postPerformance = useMemo(() => {
+    return records
+      .map((r) => {
+        const days = daysSincePublish(r.publishDate);
+        const avg = dailyAvgViews(r.views, r.publishDate);
+        return { ...r, days, avg };
+      })
+      .sort((a, b) => {
+        if (a.avg == null && b.avg == null) return b.views - a.views;
+        if (a.avg == null) return 1;
+        if (b.avg == null) return -1;
+        return b.avg - a.avg;
+      });
+  }, [records]);
+  const undatedCount = postPerformance.filter((r) => r.days == null).length;
+  const visiblePosts = showAllPosts ? postPerformance : postPerformance.slice(0, POST_PAGE_SIZE);
+  const hiddenPostsCount = postPerformance.length - visiblePosts.length;
+
   return (
     <div className="tab-body">
       <h2 className="section-title"><FileSpreadsheet size={18} /> 블로그 운영 현황</h2>
@@ -749,7 +793,7 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
             <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={handleExcelUpload} disabled={parsing} />
           </label>
         </div>
-        <div className="hint">헤더에 <b>글 제목</b> · <b>조회수</b> · <b>소개한 매체</b>(여기어때/마이리얼트립/클룩) · <b>목적</b>(매출/조회수) 열을 넣어 업로드하면 이 달 발행 글 수·조회수가 자동 계산되고, 아래에서 나라·상품 분석도 볼 수 있어요.</div>
+        <div className="hint">헤더에 <b>글 제목</b> · <b>조회수</b> · <b>소개한 매체</b>(여기어때/마이리얼트립/클룩) · <b>목적</b>(매출/조회수) · <b>게시 날짜</b>(선택) 열을 넣어 업로드하면 이 달 발행 글 수·조회수가 자동 계산되고, 아래에서 나라·상품 분석과 게시일 기준 성과도 볼 수 있어요. 게시 날짜를 넣으면 갓 올라온 글도 조회수가 낮다고 불리하게 평가되지 않고 일평균 조회수로 공정하게 비교돼요.</div>
 
         <div className="manual-row">
           <div className="field"><label>발행 글 수 (직접 입력)</label><input className="text-input" value={postsInput} onChange={(e) => setPostsInput(e.target.value)} placeholder="예: 45" /></div>
@@ -777,6 +821,40 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
           </table>
         ) : (
           <EmptyState icon={BarChart3} title="이 달 게시글 분석 데이터가 없어요" desc="위에서 게시글 엑셀을 업로드하면 어떤 나라·상품 포스팅이 많았는지 정리돼요." />
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-title">{formatMonthLabel(month)} 게시글별 성과 — 일평균 조회수 기준 ({blog})</div>
+        {postPerformance.length ? (
+          <>
+            <div className="hint" style={{ marginTop: 0 }}>
+              게시일 기준 경과일로 나눈 일평균 조회수로 정렬했어요. 최근에 올라온 글도 조회수가 아직 낮다는 이유로 순위에서 불리해지지 않아요.
+              {undatedCount > 0 && ` (게시 날짜가 없는 글 ${undatedCount}건은 뒤로 정렬돼요)`}
+            </div>
+            <table className="table">
+              <thead><tr><th>글 제목</th><th>나라/지역</th><th>게시일</th><th>경과일</th><th>조회수</th><th>일평균 조회수</th></tr></thead>
+              <tbody>
+                {visiblePosts.map((r, i) => (
+                  <tr key={`${r.title}-${i}`} className={i === 0 ? "top-row" : ""}>
+                    <td>{r.title}</td>
+                    <td>{r.destination}</td>
+                    <td>{r.publishDate || "-"}</td>
+                    <td>{r.days != null ? `${r.days}일` : "-"}</td>
+                    <td>{r.views.toLocaleString("ko-KR")}</td>
+                    <td>{r.avg != null ? r.avg.toFixed(1) : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {postPerformance.length > POST_PAGE_SIZE && (
+              <button className="ghost-btn" style={{ marginTop: 10 }} onClick={() => setShowAllPosts(!showAllPosts)}>
+                {showAllPosts ? "접기" : `나머지 ${hiddenPostsCount}개 더보기`}
+              </button>
+            )}
+          </>
+        ) : (
+          <EmptyState icon={BarChart3} title="이 달 게시글 데이터가 없어요" desc="게시 날짜 열까지 넣어 업로드하면 발행 효율을 공정하게 비교할 수 있어요." />
         )}
       </div>
 
@@ -986,6 +1064,14 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
   const revenueTop10 = useMemo(() => [...allProducts].sort((a, b) => b.totalRevenue - a.totalRevenue).slice(0, 10), [allProducts]);
   const qtyTop10 = useMemo(() => [...allProducts].sort((a, b) => b.qty - a.qty).slice(0, 10), [allProducts]);
   const viewsTop10 = useMemo(() => [...allPosts].sort((a, b) => b.views - a.views).slice(0, 10), [allPosts]);
+  // 발행 효율: 게시일이 있는 글만 대상으로 일평균 조회수 상위 10개. 최근에 올라온 글도 공정하게 비교돼요.
+  const efficiencyTop10 = useMemo(() => {
+    return allPosts
+      .map((r) => ({ ...r, days: daysSincePublish(r.publishDate), avg: dailyAvgViews(r.views, r.publishDate) }))
+      .filter((r) => r.avg != null)
+      .sort((a, b) => b.avg - a.avg)
+      .slice(0, 10);
+  }, [allPosts]);
 
   const compositeTop10 = useMemo(() => {
     const map = {};
@@ -1093,6 +1179,29 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
           </div>
 
           <div className="panel">
+            <div className="panel-title">⚡ 발행 효율 TOP 10 — 일평균 조회수</div>
+            <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>게시일 대비 일평균 조회수 기준이라, 최근에 올린 글도 조회수가 아직 낮다는 이유로 밀리지 않아요. (게시 날짜를 넣어 업로드한 글만 집계돼요)</div>
+            {efficiencyTop10.length ? (
+              <table className="table">
+                <thead><tr><th>순위</th><th>지역</th><th>나라/지역</th><th>글 제목</th><th>게시일</th><th>경과일</th><th>일평균 조회수</th></tr></thead>
+                <tbody>
+                  {efficiencyTop10.map((r, i) => (
+                    <tr key={i} className={i === 0 ? "top-row" : ""}>
+                      <td>{i + 1}</td>
+                      <td><span className={regionBadge(r.region)}>{r.region}</span></td>
+                      <td>{r.destination}</td>
+                      <td>{r.title}</td>
+                      <td>{r.publishDate}</td>
+                      <td>{r.days}일</td>
+                      <td>{r.avg.toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <EmptyState icon={FileSpreadsheet} title="게시 날짜가 있는 글이 없어요" desc="블로그 운영 탭에서 게시 날짜 열을 포함해 엑셀을 업로드해주세요." />}
+          </div>
+
+          <div className="panel">
             <div className="panel-title">🏆 종합 TOP 10 — 나라/지역/상품 분석</div>
             <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>매출 비중과 조회수 비중을 절반씩 반영한 종합 인기 순위예요.</div>
             {compositeTop10.length ? (
@@ -1139,13 +1248,32 @@ function Style() {
         background: #16273F; border: 1px solid #2A3F5C; border-radius: 12px; padding: 32px 28px;
         width: 320px; display: flex; flex-direction: column; gap: 12px; align-items: center;
       }
-      .login-mark {
-        width: 40px; height: 40px; border-radius: 10px; background: linear-gradient(135deg, #E8A33D, #c9822a);
-        display: flex; align-items: center; justify-content: center; color: #0F1B2D; margin-bottom: 4px;
-      }
       .login-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 0.5px; }
       .login-sub { font-size: 12px; color: #93A2BC; text-align: center; margin-bottom: 8px; }
       .login-card .text-input { width: 100%; min-width: 0; }
+      .dog-row { display: flex; gap: 16px; margin-top: 4px; }
+      .dog-btn {
+        display: flex; flex-direction: column; align-items: center; gap: 6px;
+        background: none; border: none; cursor: pointer; padding: 0;
+      }
+      .dog-icon {
+        width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+        transition: transform .12s ease;
+      }
+      .dog-btn:active .dog-icon { transform: scale(0.9); }
+      .dog-label { font-size: 11px; color: #93A2BC; }
+      .dog-spotted {
+        background: radial-gradient(circle at 32% 34%, #14202f 11%, transparent 12%),
+          radial-gradient(circle at 68% 60%, #14202f 14%, transparent 15%),
+          radial-gradient(circle at 76% 26%, #14202f 8%, transparent 9%), #F4F1E8;
+        color: #14202f;
+      }
+      .dog-welsh { background: linear-gradient(180deg, #E8A33D 55%, #F4F1E8 55%); color: #0F1B2D; }
+      .dog-retriever { background: #c98a3e; color: #2b1a08; }
+      .dog-pomeranian { background: #f0d9a8; color: #7a5a28; }
+      .gate-dots { display: flex; gap: 8px; margin-top: 10px; }
+      .gate-dot { width: 8px; height: 8px; border-radius: 50%; background: #2A3F5C; transition: background .15s; }
+      .gate-dot.filled { background: #E8A33D; }
       .logout-btn {
         margin-left: auto; background: transparent; border: 1px solid #2A3F5C; color: #93A2BC;
         width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer;
