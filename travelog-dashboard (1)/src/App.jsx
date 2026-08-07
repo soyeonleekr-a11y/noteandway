@@ -20,8 +20,8 @@ const TABS = [
   { id: "overview", label: "개요", gate: "GATE 1", icon: Plane },
   { id: "revenue", label: "플랫폼 매출", gate: "GATE 2", icon: TrendingUp },
   { id: "posts", label: "블로그 운영", gate: "GATE 3", icon: FileSpreadsheet },
-  { id: "consulting", label: "컨설팅", gate: "GATE 4", icon: Sparkles },
-  { id: "insight", label: "인사이트", gate: "GATE 5", icon: BarChart3 },
+  { id: "insight", label: "인사이트", gate: "GATE 4", icon: BarChart3 },
+  { id: "consulting", label: "컨설팅", gate: "GATE 5", icon: Sparkles },
 ];
 
 // 글 제목/상품명에서 나라·지역을 추정하기 위한 키워드 사전 (구체적인 지명부터 먼저 매칭)
@@ -793,7 +793,7 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
             <input type="file" accept=".xlsx,.xls,.csv" hidden onChange={handleExcelUpload} disabled={parsing} />
           </label>
         </div>
-        <div className="hint">헤더에 <b>글 제목</b> · <b>조회수</b> · <b>소개한 매체</b>(여기어때/마이리얼트립/클룩) · <b>목적</b>(매출/조회수) · <b>게시 날짜</b>(선택) 열을 넣어 업로드하면 이 달 발행 글 수·조회수가 자동 계산되고, 아래에서 나라·상품 분석과 게시일 기준 성과도 볼 수 있어요. 게시 날짜를 넣으면 갓 올라온 글도 조회수가 낮다고 불리하게 평가되지 않고 일평균 조회수로 공정하게 비교돼요.</div>
+        <div className="hint">헤더에 <b>글 제목</b> · <b>조회수</b>는 꼭 있어야 하고, <b>소개한 매체</b>(여기어때/마이리얼트립/클룩) · <b>목적</b>(매출/조회수) · <b>게시 날짜</b>는 없어도 괜찮아요(선택). 있으면 이 달 발행 글 수·조회수가 자동 계산되고, 아래에서 나라·상품 분석과 게시일 기준 성과도 볼 수 있어요. 게시 날짜를 넣으면 갓 올라온 글도 조회수가 낮다고 불리하게 평가되지 않고 일평균 조회수로 공정하게 비교돼요.</div>
 
         <div className="manual-row">
           <div className="field"><label>발행 글 수 (직접 입력)</label><input className="text-input" value={postsInput} onChange={(e) => setPostsInput(e.target.value)} placeholder="예: 45" /></div>
@@ -938,8 +938,17 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
         body: JSON.stringify({ prompt }),
       });
       if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        throw new Error(errBody.error || "컨설팅 서버 호출에 실패했어요");
+        const bodyText = await response.text().catch(() => "");
+        let detail = "";
+        try {
+          detail = JSON.parse(bodyText).error || "";
+        } catch (parseErr) {
+          // 서버가 JSON이 아닌 응답(예: 함수를 못 찾아서 나오는 404 HTML 페이지)을 준 경우
+          detail = response.status === 404
+            ? "컨설팅 함수(consult)를 찾을 수 없어요. Netlify에 netlify/functions 폴더가 제대로 배포됐는지 확인해주세요."
+            : "";
+        }
+        throw new Error(detail || `컨설팅 서버 호출에 실패했어요 (상태 코드 ${response.status})`);
       }
       const data = await response.json();
       const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
