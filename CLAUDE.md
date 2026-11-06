@@ -48,11 +48,13 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
 - 실제 매출 데이터를 지우거나 덮어쓰는 코드는 실행하기 전에 하연이한테 먼저 물어봐.
 
 ## 금지사항
-아래 ❌ 항목은 `.claude/hooks/guard.mjs` 훅이 Bash 명령 실행 직전에 검사해서 **자동으로 막아** (표시: 🔒). 훅이 막으면 이유를 읽고 우회하지 말고 하연이한테 물어봐.
+아래 ❌ 항목은 `.claude/hooks/guard.mjs` 훅이 Bash·PowerShell 명령 실행 직전에 검사해서 **자동으로 막아** (표시: 🔒). 훅이 막으면 이유를 읽고 우회하지 말고 하연이한테 물어봐.
 
 - ❌ 🔒 main/master에 직접 푸시 금지. main 브랜치 위에서 바로 커밋하는 것도 금지야.
 - ❌ 🔒 force 푸시(`-f`, `--force`), `git push --all` 금지. (`--force-with-lease`는 작업 브랜치에서만 가능)
-- ❌ 🔒 PR 머지(`gh pr merge`) 금지. 머지는 하연이가 확인하고 직접 해.
+- ❌ 🔒 저장소를 바꾸는 gh 명령 금지: `gh repo delete/edit/rename`, `gh api`의 DELETE·PUT·PATCH 요청, `gh pr merge --admin`
+- ❌ 하연이가 채팅에서 **"머지해"라고 하기 전에는** PR을 머지하지 마. 머지하면 바로 실제 사이트에 배포돼.
+  - 🔐 `gh pr merge`는 훅이 막지 않고 **터미널 확인창**을 띄워. 하연이가 승인해야 실행돼.
 - ❌ 🔒 `.env`, `CLAUDE.local.md`, 정산 엑셀/CSV, 인증서·비밀키 커밋 금지. `git add -f`로 .gitignore를 우회하는 것도 금지야.
 - ❌ 🔒 API 키(`sk-ant-...` 등), 매출 금액(100만 원 이상), 개인 이메일을 코드·문서·커밋 메시지에 넣지 마. 저장소가 공개야. 필요한 건 `CLAUDE.local.md`에 적어.
 - ❌ Firestore 실제 데이터(`dashboardData`, `allowedUsers`)를 삭제하거나 덮어쓰지 마. 코드든 일회성 스크립트든 하연이가 OK 하기 전에는 실행하지 않아.
@@ -60,6 +62,11 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
 - ❌ `ANTHROPIC_API_KEY`를 프론트(`src/`)에서 쓰거나 코드에 적지 마. Netlify 함수에서만 환경변수로 읽어.
 
 훅의 한계: Claude Code 안에서 실행하는 명령만 검사해. 터미널에서 직접 입력하는 git 명령은 막지 못하니까 하연이도 같은 규칙을 지켜줘.
+
+## PR 만들기·머지 (GitHub CLI)
+- `gh`가 설치돼 있고 `yony9751` 계정으로 로그인돼 있어 (원본 저장소 Write 권한). Claude Code 세션에서 `gh`가 안 잡히면 `"/c/Program Files/GitHub CLI/gh.exe"`로 실행해.
+- 흐름: 작업 브랜치 푸시 → `gh pr create --repo soyeonleekr-a11y/noteandway --base main` → 바뀐 내용을 하연이한테 요약 → 하연이가 "머지해" → `gh pr merge <번호> --merge --delete-branch` → 확인창 승인 → Netlify 자동 배포
+- 여러 PR이 서로 쌓여 있으면(한 브랜치가 다른 브랜치 위에서 시작) 아래쪽 PR부터 머지해.
 
 ## 공개 저장소 주의
 - 2026-11-06부터 **저장소가 공개(public)야.** (Netlify 무료 플랜에서 하연이 커밋도 빌드되게 하려고 바꿈)
