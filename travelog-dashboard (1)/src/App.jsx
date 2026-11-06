@@ -251,7 +251,8 @@ function groupProducts(products) {
 const PLATFORM_COLUMNS = {
   // sales: 고객이 결제한 판매금액. 수수료율(정산금 ÷ 판매금액)을 계산할 때만 써요.
   "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", sales: "판매 금액", category: "상품군" },
-  "여기어때": { revenue: "정산금액" }, // '총 실적 인정 금액'이 아니라 '정산금액'이 수익 (하연이 확인)
+  // 수익은 '정산금액', 판매금액은 '총 실적 인정 금액' (하연이 확인)
+  "여기어때": { revenue: "정산금액", sales: "총 실적 인정 금액" },
 };
 const COLUMN_LABELS = { name: "상품명", revenue: "수익", qty: "수량", sales: "판매금액", category: "상품군" };
 
