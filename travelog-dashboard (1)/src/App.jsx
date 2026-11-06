@@ -24,53 +24,105 @@ const TABS = [
   { id: "consulting", label: "컨설팅", gate: "GATE 5", icon: Sparkles },
 ];
 
-// 글 제목/상품명에서 나라·지역을 추정하기 위한 키워드 사전 (구체적인 지명부터 먼저 매칭)
+// 글 제목/상품명에서 나라·지역을 추정하기 위한 키워드 사전
+// - D(이름, 국내/해외, [같은 곳으로 묶을 다른 표기·명소], 나라 단위 여부)
+// - 나라 단위(일본, 미국…)는 같은 텍스트에 도시 이름이 없을 때만 쓰여요. "일본 오사카" → 오사카
+// - 도시끼리는 텍스트에서 먼저 나오는 쪽이 이겨요. "보코 서울 명동 … 싱가포르 뷔페" → 서울
+const D = (name, region, keywords = [], country = false) => ({ name, region, keywords: [name, ...keywords], country });
 const DESTINATIONS = [
-  { name: "도쿄", region: "해외" }, { name: "오사카", region: "해외" }, { name: "교토", region: "해외" },
-  { name: "후쿠오카", region: "해외" }, { name: "삿포로", region: "해외" }, { name: "오키나와", region: "해외" },
-  { name: "일본", region: "해외" },
-  { name: "다낭", region: "해외" }, { name: "하노이", region: "해외" }, { name: "호치민", region: "해외" },
-  { name: "푸꾸옥", region: "해외" }, { name: "나트랑", region: "해외" }, { name: "베트남", region: "해외" },
-  { name: "방콕", region: "해외" }, { name: "푸켓", region: "해외" }, { name: "치앙마이", region: "해외" },
-  { name: "파타야", region: "해외" }, { name: "태국", region: "해외" },
-  { name: "타이베이", region: "해외" }, { name: "대만", region: "해외" },
-  { name: "세부", region: "해외" }, { name: "보라카이", region: "해외" }, { name: "마닐라", region: "해외" },
-  { name: "필리핀", region: "해외" },
-  { name: "싱가포르", region: "해외" },
-  { name: "홍콩", region: "해외" }, { name: "마카오", region: "해외" },
-  { name: "상하이", region: "해외" }, { name: "베이징", region: "해외" }, { name: "중국", region: "해외" },
-  { name: "괌", region: "해외" }, { name: "사이판", region: "해외" },
-  { name: "몰디브", region: "해외" },
-  { name: "발리", region: "해외" }, { name: "인도네시아", region: "해외" },
-  { name: "파리", region: "해외" }, { name: "프랑스", region: "해외" },
-  { name: "로마", region: "해외" }, { name: "밀라노", region: "해외" }, { name: "이탈리아", region: "해외" },
-  { name: "바르셀로나", region: "해외" }, { name: "스페인", region: "해외" },
-  { name: "스위스", region: "해외" }, { name: "독일", region: "해외" },
-  { name: "런던", region: "해외" }, { name: "영국", region: "해외" },
-  { name: "프라하", region: "해외" }, { name: "체코", region: "해외" },
-  { name: "크로아티아", region: "해외" }, { name: "산토리니", region: "해외" }, { name: "그리스", region: "해외" },
-  { name: "튀르키예", region: "해외" }, { name: "터키", region: "해외" },
-  { name: "하와이", region: "해외" }, { name: "뉴욕", region: "해외" }, { name: "미국", region: "해외" },
-  { name: "캐나다", region: "해외" },
-  { name: "시드니", region: "해외" }, { name: "호주", region: "해외" }, { name: "뉴질랜드", region: "해외" },
-  { name: "몽골", region: "해외" }, { name: "두바이", region: "해외" },
-  { name: "라오스", region: "해외" }, { name: "캄보디아", region: "해외" }, { name: "미얀마", region: "해외" },
-  { name: "제주", region: "국내" }, { name: "부산", region: "국내" }, { name: "강릉", region: "국내" },
-  { name: "여수", region: "국내" }, { name: "전주", region: "국내" }, { name: "경주", region: "국내" },
-  { name: "속초", region: "국내" }, { name: "남해", region: "국내" }, { name: "통영", region: "국내" },
-  { name: "거제", region: "국내" }, { name: "가평", region: "국내" }, { name: "양양", region: "국내" },
-  { name: "포항", region: "국내" }, { name: "담양", region: "국내" }, { name: "순천", region: "국내" },
-  { name: "목포", region: "국내" }, { name: "안동", region: "국내" }, { name: "보성", region: "국내" },
-  { name: "인천", region: "국내" }, { name: "서울", region: "국내" }, { name: "강원", region: "국내" },
+  // 일본
+  D("도쿄", "해외"), D("오사카", "해외", ["USJ", "유니버설 스튜디오 재팬"]), D("교토", "해외"),
+  D("후쿠오카", "해외"), D("삿포로", "해외"), D("오키나와", "해외"), D("나고야", "해외"),
+  D("다카마쓰", "해외", ["다카마츠", "타카마츠", "타카마쓰"]), D("나오시마", "해외"),
+  D("마쓰야마", "해외", ["마츠야마"]),
+  D("일본", "해외", [], true),
+  // 동남아
+  D("다낭", "해외"), D("하노이", "해외"), D("호치민", "해외"), D("푸꾸옥", "해외"), D("나트랑", "해외"),
+  D("베트남", "해외", [], true),
+  D("방콕", "해외"), D("푸켓", "해외"), D("치앙마이", "해외"), D("파타야", "해외"), D("태국", "해외", [], true),
+  D("세부", "해외"), D("보라카이", "해외"), D("마닐라", "해외"), D("필리핀", "해외", [], true),
+  D("싱가포르", "해외"),
+  D("발리", "해외"), D("인도네시아", "해외", [], true),
+  D("라오스", "해외", [], true), D("캄보디아", "해외", [], true), D("미얀마", "해외", [], true),
+  // 중화권
+  D("타이베이", "해외"), D("대만", "해외", [], true),
+  D("홍콩", "해외"), D("마카오", "해외"),
+  D("상하이", "해외"), D("베이징", "해외"), D("중국", "해외", [], true),
+  // 휴양지
+  D("괌", "해외"), D("사이판", "해외"), D("몰디브", "해외"), D("하와이", "해외"),
+  // 유럽
+  D("파리", "해외"), D("프랑스", "해외", [], true),
+  D("로마", "해외"), D("밀라노", "해외"), D("이탈리아", "해외", [], true),
+  D("바르셀로나", "해외"), D("스페인", "해외", [], true),
+  D("스위스", "해외", [], true), D("독일", "해외", [], true),
+  D("런던", "해외"), D("영국", "해외", [], true),
+  D("프라하", "해외"), D("체코", "해외", [], true),
+  D("크로아티아", "해외", [], true), D("산토리니", "해외"), D("그리스", "해외", [], true),
+  D("튀르키예", "해외", ["터키"], true),
+  // 미주·대양주·기타
+  D("뉴욕", "해외"),
+  D("LA", "해외", ["로스앤젤레스", "로스엔젤레스", "엘에이"]),
+  D("라스베가스", "해외", ["라스베이거스"]),
+  D("그랜드캐년", "해외", ["그랜드캐니언", "그랜드 캐년", "그랜드 캐니언"]),
+  D("샌프란시스코", "해외"), D("요세미티", "해외"),
+  D("미국", "해외", [], true), D("캐나다", "해외", [], true),
+  D("시드니", "해외"), D("호주", "해외", [], true), D("뉴질랜드", "해외", [], true),
+  D("몽골", "해외", [], true), D("두바이", "해외"),
+  // 국내
+  D("서울", "국내", ["북한산", "명동", "홍대", "강남", "잠실", "성수", "여의도"]),
+  D("인천", "국내", ["인스파이어", "영종도", "송도"]),
+  D("제주", "국내", ["서귀포", "애월"]),
+  D("부산", "국내", ["해운대", "광안리"]),
+  D("강릉", "국내"), D("속초", "국내"), D("양양", "국내"), D("설악산", "국내"),
+  D("평창", "국내"), D("춘천", "국내"), D("가평", "국내"),
+  D("제천", "국내"), D("단양", "국내"), D("청송", "국내"), D("안동", "국내"),
+  D("경주", "국내"), D("포항", "국내"), D("대구", "국내"), D("울산", "국내"),
+  D("여수", "국내"), D("순천", "국내"), D("담양", "국내"), D("보성", "국내"), D("목포", "국내"),
+  D("전주", "국내"), D("군산", "국내"), D("대전", "국내"), D("태안", "국내"), D("수원", "국내"),
+  D("남해", "국내"), D("통영", "국내"), D("거제", "국내"),
+  D("강원", "국내", [], true),
 ];
+// 지명이 다른 단어 속에 들어 있어서 잘못 잡히는 표현 ("아로마 마사지" → 로마, "제주항공 오사카" → 제주)
+const MATCH_IGNORE = ["제주항공", "아로마", "세부사항", "세부 사항", "상세"];
 const PRODUCT_TYPES = [
   "항공권", "호텔", "풀빌라", "펜션", "숙소", "렌터카", "투어", "액티비티", "티켓",
   "입장권", "스파", "크루즈", "유심", "esim", "와이파이", "여행자보험", "골프",
 ];
+// 영문 키워드(LA, USJ)는 "PLAZA"처럼 다른 단어 속에 들어간 경우를 빼고 찾아요.
+function findKeyword(text, kw) {
+  if (/^[A-Za-z]+$/.test(kw)) {
+    const m = new RegExp(`(^|[^A-Za-z])${kw}(?![A-Za-z])`).exec(text);
+    return m ? m.index + m[1].length : -1;
+  }
+  return text.indexOf(kw);
+}
 function matchDestination(text) {
   if (!text) return null;
-  const found = DESTINATIONS.find((d) => text.includes(d.name));
-  return found || null;
+  let src = String(text);
+  // 지울 표현은 같은 길이의 공백으로 바꿔서, 다른 지명의 위치(먼저 나온 순서)는 그대로 둬요.
+  MATCH_IGNORE.forEach((w) => { src = src.split(w).join(" ".repeat(w.length)); });
+  let best = null;
+  DESTINATIONS.forEach((d) => {
+    d.keywords.forEach((kw) => {
+      const idx = findKeyword(src, kw);
+      if (idx < 0) return;
+      const better = !best
+        || (best.d.country && !d.country)
+        || (best.d.country === d.country && (idx < best.idx || (idx === best.idx && kw.length > best.len)));
+      if (better) best = { d, idx, len: kw.length };
+    });
+  });
+  return best ? { name: best.d.name, region: best.d.region } : null;
+}
+// 수동 태그는 Firestore "region-tags"에 { 태그키: { region, destination } } 형태로 저장돼요.
+function productTagKey(platform, name) { return `product::${platform}::${normalizeNameKey(name)}`; }
+function postTagKey(title) { return `post::${normalizeNameKey(title)}`; }
+// 직접 지정한 지역이 있으면 그걸 쓰고, 없으면 사전으로 추정해요.
+function classifyText(text, tags, tagKey) {
+  const tag = tags?.[tagKey];
+  if (tag) return { region: tag.region, destination: tag.destination, manual: true };
+  const d = matchDestination(text);
+  return d ? { region: d.region, destination: d.name, manual: false } : { region: "기타", destination: "기타", manual: false };
 }
 function matchProductType(text) {
   if (!text) return null;
@@ -229,16 +281,18 @@ export default function App() {
   const [postRecords, setPostRecords] = useState({});
   const [blogNames, setBlogNames] = useState(["해외여행 블로그", "국내여행 블로그"]);
   const [consultingHistory, setConsultingHistory] = useState([]);
+  const [regionTags, setRegionTags] = useState({});
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     if (!unlocked) return;
     (async () => {
       try { await signInAnonymously(auth); } catch (e) { console.error("[firebase auth] 익명 로그인 실패", e); }
-      const [pd, bd, pr, bn, ch] = await Promise.all([
+      const [pd, bd, pr, bn, ch, rt] = await Promise.all([
         safeGet("platform-data"), safeGet("posts-data"), safeGet("post-records"),
-        safeGet("blog-names"), safeGet("consulting-history"),
+        safeGet("blog-names"), safeGet("consulting-history"), safeGet("region-tags"),
       ]);
+      if (rt) setRegionTags(rt);
       if (pd) setPlatformData(pd);
       if (bd) setPostsData(bd);
       if (pr) setPostRecords(pr);
@@ -271,6 +325,15 @@ export default function App() {
   async function updateBlogNames(next) {
     setBlogNames(next);
     await safeSet("blog-names", next);
+  }
+  // tag가 null이면 직접 지정을 해제하고 사전 자동 분류로 돌아가요.
+  async function updateRegionTag(key, tag) {
+    const next = { ...regionTags };
+    if (tag) next[key] = tag; else delete next[key];
+    setRegionTags(next);
+    const ok = await safeSet("region-tags", next);
+    if (!ok) showToast("저장에 실패했어요. 다시 시도해주세요.", "err");
+    else showToast(tag ? `'${tag.destination}'(으)로 지정했어요` : "직접 지정을 해제했어요");
   }
 
   const months = useMemo(() => monthList(12), []);
@@ -356,6 +419,7 @@ export default function App() {
             months={months} postsData={postsData} updatePostsData={updatePostsData}
             postRecords={postRecords} updatePostRecords={updatePostRecords}
             blogNames={blogNames} updateBlogNames={updateBlogNames} showToast={showToast}
+            regionTags={regionTags}
           />
         )}
         {activeTab === "consulting" && (
@@ -368,6 +432,7 @@ export default function App() {
         {activeTab === "insight" && (
           <InsightTab
             months={months} platformData={platformData} postRecords={postRecords} blogNames={blogNames}
+            regionTags={regionTags} updateRegionTag={updateRegionTag}
           />
         )}
       </main>
@@ -644,7 +709,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
   );
 }
 
-function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostRecords, blogNames, updateBlogNames, showToast }) {
+function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostRecords, blogNames, updateBlogNames, showToast, regionTags }) {
   const [blog, setBlog] = useState(blogNames[0]);
   const [month, setMonth] = useState(currentMonth());
   const [postsInput, setPostsInput] = useState("");
@@ -729,7 +794,11 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
   const history = Object.entries(postsData[blog] || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 12);
   const chartData = [...history].reverse().map(([m, d]) => ({ month: formatMonthLabel(m).replace("년 ", ".").replace("월", ""), 조회수: d.views, 발행글: d.posts }));
 
-  const records = postRecords[blog]?.[month] || [];
+  // 업로드할 때 저장된 지역 대신, 최신 사전 + 직접 지정한 지역으로 다시 분류해요. (예전에 올린 글도 바로 반영)
+  const records = useMemo(
+    () => (postRecords[blog]?.[month] || []).map((r) => ({ ...r, ...classifyText(r.title, regionTags, postTagKey(r.title)) })),
+    [postRecords, blog, month, regionTags],
+  );
   const destAnalysis = useMemo(() => {
     const map = {};
     records.forEach((r) => {
@@ -1031,7 +1100,7 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
   );
 }
 
-function InsightTab({ months, platformData, postRecords, blogNames }) {
+function InsightTab({ months, platformData, postRecords, blogNames, regionTags, updateRegionTag }) {
   const [scope, setScope] = useState("all");
 
   // 같은 상품(플랫폼+상품명)이 여러 달에 걸쳐 등장해도 하나로 합쳐서 중복 없이 집계해요.
@@ -1045,10 +1114,10 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
           const prod = normalizeProduct(raw);
           const key = `${p}::${normalizeNameKey(prod.name)}`;
           if (!map[key]) {
-            const dest = matchDestination(prod.name);
+            const c = classifyText(prod.name, regionTags, productTagKey(p, prod.name));
             map[key] = {
               name: prod.name, platform: p, qty: 0, totalRevenue: 0,
-              region: dest ? dest.region : "기타", destination: dest ? dest.name : "기타",
+              region: c.region, destination: c.destination,
             };
           }
           map[key].qty += prod.qty;
@@ -1057,7 +1126,7 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
       });
     });
     return Object.values(map);
-  }, [platformData, scope]);
+  }, [platformData, scope, regionTags]);
 
   const allPosts = useMemo(() => {
     const list = [];
@@ -1065,11 +1134,36 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
       const monthsObj = postRecords[b] || {};
       Object.entries(monthsObj).forEach(([m, records]) => {
         if (scope !== "all" && m !== scope) return;
-        records.forEach((r) => list.push({ ...r, blog: b, month: m }));
+        records.forEach((r) => list.push({ ...r, ...classifyText(r.title, regionTags, postTagKey(r.title)), blog: b, month: m }));
       });
     });
     return list;
-  }, [postRecords, blogNames, scope]);
+  }, [postRecords, blogNames, scope, regionTags]);
+
+  // 지역 직접 지정용 목록: 기간 선택과 상관없이 전체 기간의 상품·글을 하나씩만 모아요.
+  const taggableItems = useMemo(() => {
+    const map = {};
+    PLATFORMS.forEach((p) => {
+      Object.values(platformData[p] || {}).forEach((data) => {
+        (data.products || []).forEach((raw) => {
+          const prod = normalizeProduct(raw);
+          const key = productTagKey(p, prod.name);
+          if (!map[key]) map[key] = { key, kind: "상품", name: prod.name, source: p, revenue: 0, views: 0, ...classifyText(prod.name, regionTags, key) };
+          map[key].revenue += prod.totalRevenue;
+        });
+      });
+    });
+    blogNames.forEach((b) => {
+      Object.values(postRecords[b] || {}).forEach((records) => {
+        records.forEach((r) => {
+          const key = postTagKey(r.title);
+          if (!map[key]) map[key] = { key, kind: "글", name: r.title, source: b, revenue: 0, views: 0, ...classifyText(r.title, regionTags, key) };
+          map[key].views += r.views || 0;
+        });
+      });
+    });
+    return Object.values(map).sort((a, b) => b.revenue - a.revenue || b.views - a.views);
+  }, [platformData, postRecords, blogNames, regionTags]);
 
   const revenueTop10 = useMemo(() => [...allProducts].sort((a, b) => b.totalRevenue - a.totalRevenue).slice(0, 10), [allProducts]);
   const qtyTop10 = useMemo(() => [...allProducts].sort((a, b) => b.qty - a.qty).slice(0, 10), [allProducts]);
@@ -1233,9 +1327,131 @@ function InsightTab({ months, platformData, postRecords, blogNames }) {
               </table>
             ) : <EmptyState icon={Trophy} title="종합 분석할 데이터가 없어요" desc="매출과 게시글 데이터를 함께 업로드하면 종합 순위가 만들어져요." />}
           </div>
+
+          <RegionTagPanel items={taggableItems} regionTags={regionTags} onSave={updateRegionTag} />
         </>
       )}
     </div>
+  );
+}
+
+const TAG_PAGE_SIZE = 15;
+function RegionTagPanel({ items, regionTags, onSave }) {
+  const [mode, setMode] = useState("untagged"); // untagged: 미분류 / manual: 직접 지정한 항목
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(TAG_PAGE_SIZE);
+
+  const untagged = items.filter((i) => i.region === "기타");
+  const manual = items.filter((i) => i.manual);
+  const q = query.trim();
+  const list = q ? items.filter((i) => i.name.includes(q)) : mode === "manual" ? manual : untagged;
+  const untaggedRevenue = untagged.reduce((s, i) => s + i.revenue, 0);
+
+  // 자동완성 후보: 사전 지명 + 직접 입력했던 지명
+  const destOptions = useMemo(() => {
+    const set = new Set(DESTINATIONS.map((d) => d.name));
+    Object.values(regionTags || {}).forEach((t) => set.add(t.destination));
+    return [...set];
+  }, [regionTags]);
+
+  function switchMode(m) { setMode(m); setQuery(""); setLimit(TAG_PAGE_SIZE); }
+
+  return (
+    <div className="panel">
+      <div className="panel-title">🏷️ 지역 직접 지정하기</div>
+      <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
+        지역을 찾지 못해 '기타'로 빠진 항목이에요. 지역을 지정하면 위의 모든 표와 블로그 운영 탭에 바로 반영돼요.
+        {untagged.length > 0 && <> 지금 미분류: <b>{untagged.length}건 · {formatWon(untaggedRevenue)}</b></>}
+      </div>
+      <div className="tag-toolbar">
+        <div className="seg">
+          <button className={`ghost-btn ${!q && mode === "untagged" ? "active" : ""}`} onClick={() => switchMode("untagged")}>미분류 {untagged.length}</button>
+          <button className={`ghost-btn ${!q && mode === "manual" ? "active" : ""}`} onClick={() => switchMode("manual")}>직접 지정함 {manual.length}</button>
+        </div>
+        <input
+          className="text-input tag-search" value={query} placeholder="상품명·글 제목 검색 (잘못 분류된 항목 고치기)"
+          onChange={(e) => { setQuery(e.target.value); setLimit(TAG_PAGE_SIZE); }}
+        />
+      </div>
+
+      {list.length ? (
+        <>
+          <div className="table-scroll">
+            <table className="table">
+              <thead><tr><th>구분</th><th>상품명 / 글 제목</th><th>매출 · 조회수</th><th>지역 지정</th></tr></thead>
+              <tbody>
+                {list.slice(0, limit).map((item) => (
+                  <TagRow key={`${item.key}-${item.manual}`} item={item} onSave={onSave} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {list.length > limit && (
+            <button className="ghost-btn tag-more" onClick={() => setLimit(limit + TAG_PAGE_SIZE)}>
+              더 보기 ({list.length - limit}건 남음)
+            </button>
+          )}
+        </>
+      ) : (
+        <EmptyState
+          icon={MapPin}
+          title={q ? "검색 결과가 없어요" : mode === "manual" ? "직접 지정한 항목이 아직 없어요" : "미분류 항목이 없어요 🎉"}
+          desc={q ? "다른 단어로 검색해보세요." : mode === "manual" ? "미분류 목록에서 지역을 지정하면 여기에 모여요." : "모든 상품과 글의 지역을 찾았어요."}
+        />
+      )}
+      <datalist id="destination-options">
+        {destOptions.map((d) => <option key={d} value={d} />)}
+      </datalist>
+    </div>
+  );
+}
+
+function TagRow({ item, onSave }) {
+  const known = item.region !== "기타";
+  const [destination, setDestination] = useState(known ? item.destination : "");
+  const [region, setRegion] = useState(known ? item.region : "해외");
+  const [saving, setSaving] = useState(false);
+
+  // 사전에 있는 지명을 고르면 국내/해외도 자동으로 맞춰요.
+  function changeDestination(v) {
+    setDestination(v);
+    const d = DESTINATIONS.find((x) => x.name === v.trim());
+    if (d) setRegion(d.region);
+  }
+  async function run(tag) { setSaving(true); await onSave(item.key, tag); setSaving(false); }
+
+  const value = destination.trim();
+  const unchanged = known && value === item.destination && region === item.region;
+  return (
+    <tr>
+      <td><span className="reco-badge badge-etc kind-badge">{item.kind}</span></td>
+      <td className="tag-name">
+        {item.name}
+        <div className="tag-sub">
+          {item.source} · 지금: {item.destination}{item.manual ? " (직접 지정)" : known ? " (자동)" : ""}
+        </div>
+      </td>
+      <td className="num-cell">{item.kind === "상품" ? formatWon(item.revenue) : `${item.views.toLocaleString("ko-KR")}회`}</td>
+      <td>
+        <div className="tag-controls">
+          <select className="select" value={region} onChange={(e) => setRegion(e.target.value)}>
+            <option value="해외">해외</option>
+            <option value="국내">국내</option>
+          </select>
+          <input
+            className="text-input" list="destination-options" value={destination} placeholder="예: 나고야"
+            onChange={(e) => changeDestination(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && value && !unchanged) run({ region, destination: value }); }}
+          />
+          <button className="primary-btn small" disabled={!value || unchanged || saving} onClick={() => run({ region, destination: value })}>
+            {saving ? <Loader2 size={13} className="spin" /> : "저장"}
+          </button>
+          {item.manual && (
+            <button className="ghost-btn" disabled={saving} onClick={() => run(null)}>해제</button>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -1433,6 +1649,22 @@ function Style() {
       .badge-intl { background: rgba(91,141,239,0.18); color: #5B8DEF; }
       .badge-domestic { background: rgba(232,163,61,0.18); color: #E8A33D; }
       .badge-etc { background: rgba(147,162,188,0.18); color: #93A2BC; }
+
+      .tag-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+      .seg { display: flex; gap: 6px; }
+      .ghost-btn.active { color: #E8A33D; border-color: #E8A33D; background: rgba(232,163,61,0.08); }
+      .ghost-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .tag-search { flex: 1; min-width: 220px; }
+      .table-scroll { overflow-x: auto; }
+      .tag-name { min-width: 220px; max-width: 420px; line-height: 1.45; }
+      .tag-sub { font-size: 11px; color: #56698c; margin-top: 3px; }
+      .kind-badge { margin-bottom: 0; white-space: nowrap; }
+      .num-cell { font-family: 'IBM Plex Mono', monospace; white-space: nowrap; color: #93A2BC; }
+      .tag-controls { display: flex; gap: 6px; align-items: center; }
+      .tag-controls .select { padding: 7px 8px; }
+      .tag-controls .text-input { min-width: 0; width: 130px; padding: 7px 9px; }
+      .primary-btn.small { padding: 7px 12px; font-size: 12px; white-space: nowrap; }
+      .tag-more { margin: 12px auto 0; }
       .reco-name { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
       .reco-reason { font-size: 12px; color: #93A2BC; line-height: 1.5; margin-bottom: 8px; }
       .reco-idea { font-size: 12px; color: #d7dced; background: #1C324F; padding: 6px 8px; border-radius: 6px; }
