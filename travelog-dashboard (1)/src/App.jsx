@@ -251,8 +251,8 @@ function groupProducts(products) {
 const PLATFORM_COLUMNS = {
   // sales: 고객이 결제한 판매금액. 수수료율(정산금 ÷ 판매금액)을 계산할 때만 써요.
   "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", sales: "판매 금액", category: "상품군" },
-  // 수익은 '정산금액', 판매금액은 '총 실적 인정 금액' (하연이 확인)
-  "여기어때": { revenue: "정산금액", sales: "총 실적 인정 금액" },
+  // 수익은 '정산금액', 판매금액은 '실적 인정 금액' (하연이 확인. 엑셀에 따라 '총 실적 인정 금액'일 수도 있어서 둘 다 찾아요)
+  "여기어때": { revenue: "정산금액", sales: ["실적 인정 금액", "총 실적 인정 금액"] },
 };
 const COLUMN_LABELS = { name: "상품명", revenue: "수익", qty: "수량", sales: "판매금액", category: "상품군" };
 
@@ -288,12 +288,29 @@ function rateSummary(groups) {
   const settle = withSales.reduce((s, g) => s + g.totalRevenue, 0);
   return { sales, settle, rate: commissionRate(settle, sales), products: withSales.length, missing: groups.length - withSales.length };
 }
-function sameHeader(a, b) {
-  return String(a ?? "").replace(/\s+/g, "") === String(b ?? "").replace(/\s+/g, "");
+// 열 이름 비교: 띄어쓰기·줄바꿈과 눈에 안 보이는 글자(제로폭 공백, BOM)는 무시해요.
+function cleanHeader(h) {
+  return String(h ?? "").replace(/[\s​-‍﻿]+/g, "");
 }
-function exactHeader(row, header) {
-  const want = String(header).replace(/\s+/g, "");
-  return Object.keys(row || {}).find((k) => String(k).replace(/\s+/g, "") === want) || null;
+// 열 이름 후보는 하나(문자열)일 수도, 여러 개(배열, 앞쪽이 우선)일 수도 있어요.
+function headerCandidates(spec) {
+  return Array.isArray(spec) ? spec : spec ? [spec] : [];
+}
+function headerLabel(spec) {
+  return headerCandidates(spec).join(" 또는 ");
+}
+// a(실제로 읽은 열 이름)가 spec(지정한 열 이름 후보) 중 하나와 같은지
+function sameHeader(a, spec) {
+  return headerCandidates(spec).some((h) => cleanHeader(a) === cleanHeader(h));
+}
+// 지정한 열 이름 후보를 순서대로 찾아서, 엑셀에 있는 첫 번째 열 이름을 돌려줘요.
+function exactHeader(row, spec) {
+  const keys = Object.keys(row || {});
+  for (const h of headerCandidates(spec)) {
+    const found = keys.find((k) => cleanHeader(k) === cleanHeader(h));
+    if (found) return found;
+  }
+  return null;
 }
 // 상품명이 눈으로는 같아 보여도 공백/특수문자 차이로 다른 문자열일 수 있어서,
 // 합치는 기준(키)으로 쓸 때는 이 함수로 정규화해요. 화면에는 원래 이름을 그대로 보여줘요.
@@ -881,7 +898,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const categoryKey = profile.category ? exactHeader(rows[0], profile.category) : null;
       // 판매금액은 수수료율용이라 없어도 업로드는 돼요. (지정한 플랫폼만 읽어요)
       const salesKey = profile.sales ? exactHeader(rows[0], profile.sales) : null;
-      const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k, h]) => h && !k).map(([, h]) => `'${h}'`);
+      const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k, h]) => h && !k).map(([, h]) => `'${headerLabel(h)}'`);
       if (missing.length) throw new Error(`${platform} 엑셀에서 ${missing.join(", ")} 열을 찾지 못했어요. 엑셀 첫 줄의 열 이름을 확인해주세요.`);
       if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
 
@@ -914,7 +931,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const source = { name: nameKey, revenue: revKey, qty: qtyKey || null, sales: salesKey || null, category: categoryKey || null, rows: rows.length, uploadedAt: new Date().toISOString() };
       const next = { ...platformData, [platform]: { ...(platformData[platform] || {}), [month]: { products, total, source } } };
       await updatePlatformData(next);
-      const salesNote = profile.sales && !salesKey ? ` · '${profile.sales}' 열이 없어서 수수료율은 빠졌어요` : "";
+      const salesNote = profile.sales && !salesKey ? ` · '${headerLabel(profile.sales)}' 열이 없어서 수수료율은 빠졌어요` : "";
       showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료 (수익: '${revKey}' 열)${salesNote}`);
     } catch (err) {
       showToast(err.message || "엑셀 파일을 읽는 데 실패했어요", "err");
@@ -991,7 +1008,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
           <div className="hint">
             {platform} 엑셀은{" "}
             {profileFields.map(([field, header], i) => (
-              <React.Fragment key={field}>{i > 0 && ", "}<b>{header}</b>({COLUMN_LABELS[field]})</React.Fragment>
+              <React.Fragment key={field}>{i > 0 && ", "}<b>{headerLabel(header)}</b>({COLUMN_LABELS[field]})</React.Fragment>
             ))}{" "}
             열을 이름 그대로 찾아요.{(!profile.name || !profile.qty) && " 상품명·수량 열은 단어로 찾으니 업로드 후 '읽은 열'을 확인해주세요."} 문구만 다른 같은 상품은 한 줄로 묶어서 보여줘요.
           </div>
@@ -1007,8 +1024,8 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 <div>
                   <b>이 달은 정산 엑셀을 다시 올려주세요.</b><br />
                   {current.source?.revenue
-                    ? <>수익이 '{current.source.revenue}' 열로 계산돼 있어요. '{profile.revenue}' 열로 다시 계산하려면 같은 달을 다시 올려주세요. (덮어써져요)</>
-                    : <>예전 방식으로 올린 데이터라 수익이 '{profile.revenue}'가 아닌 다른 열로 계산됐을 수 있어요. 같은 달을 다시 올리면 덮어써져요.</>}
+                    ? <>수익이 '{current.source.revenue}' 열로 계산돼 있어요. '{headerLabel(profile.revenue)}' 열로 다시 계산하려면 같은 달을 다시 올려주세요. (덮어써져요)</>
+                    : <>예전 방식으로 올린 데이터라 수익이 '{headerLabel(profile.revenue)}'가 아닌 다른 열로 계산됐을 수 있어요. 같은 달을 다시 올리면 덮어써져요.</>}
                 </div>
               </div>
             )}
