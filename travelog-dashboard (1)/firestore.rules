@@ -1,11 +1,25 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 익명 로그인(Anonymous Authentication)을 켠 사용자만 dashboardData 컬렉션을
-    // 읽고 쓸 수 있도록 제한해요. Firebase 콘솔 > Firestore Database > 규칙 탭에
-    // 이 내용을 붙여넣고 "게시"를 눌러주세요.
+    // 허용된 사람: Google로 로그인했고, 이메일 인증이 됐고,
+    // allowedUsers 컬렉션에 "자기 이메일"을 문서 ID로 한 문서가 있는 사람만.
+    // (이메일 목록을 이 파일에 적지 않는 이유: 저장소가 공개라서)
+    function isAllowed() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/allowedUsers/$(request.auth.token.email));
+    }
+
+    // 대시보드 데이터: 허용된 사람만 읽고 쓸 수 있어요.
     match /dashboardData/{docId} {
-      allow read, write: if request.auth != null;
+      allow read, write: if isAllowed();
+    }
+
+    // 허용 목록: 자기 문서가 있는지만 확인할 수 있어요. (앱의 '권한 없음' 화면용)
+    // 추가·삭제는 Firebase 콘솔에서만 해요.
+    match /allowedUsers/{email} {
+      allow read: if request.auth != null && request.auth.token.email == email;
+      allow write: if false;
     }
   }
 }
