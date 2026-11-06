@@ -28,7 +28,13 @@ travelog-dashboard (1)/         ← 실제 앱 폴더 (폴더 이름에 공백�
 - 스택: React 18 + Vite 5, recharts(차트), xlsx/papaparse(엑셀·CSV 파싱), lucide-react(아이콘), Firebase(Firestore + 익명 Auth)
 - 탭: 개요(OverviewTab) / 플랫폼 매출(RevenueTab) / 블로그 운영(PostsTab) / 인사이트(InsightTab) / 컨설팅(ConsultingTab)
 - 데이터: Firestore `dashboardData` 컬렉션에 문서 하나당 키 하나 (`safeGet`/`safeSet`)
-  - `platform-data`: {플랫폼: {YYYY-MM: {total, products:[{name, qty, unitRevenue, totalRevenue}]}}}
+  - `platform-data`: {플랫폼: {YYYY-MM: {total, products:[{name, qty, unitRevenue, totalRevenue, category?}], source?}}}
+    - `source`: 업로드 때 읽은 열 이름 {name, revenue, qty, category, rows, uploadedAt}. 없으면 열 이름 지정 전에 올린 예전 데이터야.
+    - `category`: 엑셀의 '상품군' (마이리얼트립만, 있을 때만 저장. Firestore는 undefined를 못 저장해)
+  - `region-tags`: {태그키: {region, destination}}. 상품 키는 `product::플랫폼::핵심이름`(productGroupKey), 예전 키 `product::플랫폼::원래이름`도 계속 읽어.
+- **마이리얼트립 정산 엑셀 열**: 예약일 · 마케팅 링크 ID · 예약 ID · 주문 구분 · 상품군 · 상품명 · 정산 기준일 · 판매 수량 · 판매 금액 · 정산 기준 금액 · 수익 금액 · 제세공과금 · 정산 예상 금액
+  - **수익 = `정산 예상 금액`** (하연이가 정함). `PLATFORM_COLUMNS`에 열 이름을 정확히 적어두고 그 이름으로만 찾아.
+  - 예전 코드는 단어가 들어간 첫 열을 골라서 상품명 대신 `상품군`, 수익 대신 `판매 금액`을 읽었어. 2026-11-06 이전에 올린 마이리얼트립 달은 다시 올려야 해 (매출 탭에 안내가 떠).
   - `posts-data`, `post-records`, `blog-names`, `consulting-history`
 - 첫 화면의 강아지 잠금(PatternGate)은 **클라이언트에서만 동작하는 화면 가림**이야. 보안 장치가 아니야.
 
@@ -90,14 +96,15 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
    - 블로그 글은 화면에 보여줄 때마다 다시 분류해 (예전에 저장된 지역값은 안 씀)
    - 인사이트 탭 '지역 직접 지정하기' 패널에서 수동 태깅 → Firestore `region-tags`
    - ⬜ 남음: 하연이가 미분류로 남은 상품명을 알려주면 `DESTINATIONS`에 추가
-4. **상품 합치기 개선**: 마이리얼트립 상하이 우전 수향마을 야경투어가 문구만 다른 이름으로 3~4줄로 쪼개져 있어. 정산 엑셀에 상품 ID 컬럼이 있으면 ID 기준으로 합치고, 없으면 대괄호·★ 문구를 뺀 핵심 이름으로 묶는 방식을 검토해.
+4. ~~상품 합치기~~ **완료** (PR: hayeon/mrt-columns): 정산 엑셀에 상품 ID가 없어서 핵심 이름(`productGroupKey`)으로 묶어. 대괄호류·★…★ 문구·이모지·기호·띄어쓰기는 빼고, 소괄호 (1인) 같은 건 상품 구분 정보라 남겨. 저장된 원본은 그대로 두고 화면에서만 묶어(`groupProducts`). 대표 이름은 수익이 가장 큰 이름이야.
+   - ⬜ 남음: '주문 구분'에 취소 건이 있는지, 취소 줄의 금액이 마이너스인지 확인. 지금은 모든 줄을 그대로 더해.
 5. ~~이심 카테고리~~ **완료** (PR: hayeon/esim-latest-month): 마이리얼트립 상품명이 나라 이름 하나뿐인 줄("중국", "일본" 등, `ESIM_PLAIN_NAMES`)을 '이심'으로 분류해. 플랫폼 상품에도 유형(`classifyProductType`)을 붙여서 매출 탭·인사이트 표에 배지로 보여줘.
 6. **링크프라이스 추가**: PLATFORMS에 추가하되 하위 머천트(아고다, 트립닷컴, 호텔스닷컴, 익스피디아, 에어알로)별로 나눠서 집계해. 확정/미확정(취소) 구분도 필요해. 하연이가 엑셀 샘플을 주면 컬럼 매핑부터 설계해.
 7. **UX**
    - ✅ 완료 (PR: hayeon/esim-latest-month): 개요 탭 기본 월 = 데이터가 있는 가장 최근 달 (`latestDataMonth`). 매출·블로그 탭의 월 선택은 '업로드할 달'이라 이번 달 그대로 둬.
    - ✅ 완료 (PR: hayeon/chart-gaps): 추이 그래프에서 데이터가 없는 달은 0 대신 빈칸(null). 실선은 끊기고 흐린 점선으로 이어줘. 선으로 안 이어지는 달(시작·끝·외톨이)은 동그라미로 표시하고, 툴팁은 "데이터 없음". 매출 탭 6개월 비교 막대그래프도 같은 규칙이야. (`monthValueOrNull`, `edgeDot`)
 8. **나중에 (마케팅 기능)**
-   - 글별 수익: 포스팅마다 추적값(서브 ID 등)을 달아 정산 엑셀과 매칭 → 조회수 1,000당 수익
+   - 글별 수익: 포스팅마다 추적값(서브 ID 등)을 달아 정산 엑셀과 매칭 → 조회수 1,000당 수익. 마이리얼트립은 정산 엑셀에 **`마케팅 링크 ID`** 열이 있어서 이걸로 글과 이을 수 있어.
    - 커미션 상향 기간을 매출 그래프 위에 표시
    - 상금·원고료를 커미션과 따로 집계
    - 조회수는 높은데 수익이 낮은 글, 시즌이 다가오는 글을 '다시 손볼 글'로 추천
