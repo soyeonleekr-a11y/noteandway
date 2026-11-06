@@ -86,6 +86,23 @@ const DESTINATIONS = [
 ];
 // 지명이 다른 단어 속에 들어 있어서 잘못 잡히는 표현 ("아로마 마사지" → 로마, "제주항공 오사카" → 제주)
 const MATCH_IGNORE = ["제주항공", "아로마", "세부사항", "세부 사항", "상세"];
+
+// ───────── 하연이가 알려준 지명 규칙 ─────────
+// 상품명에 지명 없이 명소·호텔·교통편 이름만 있는 경우를 위한 별칭이에요. { 지역 이름: [별칭, ...] }
+// 지역 이름은 위 DESTINATIONS 의 이름과 똑같아야 해요. 띄어쓰기가 달라도 찾아요(matchDestination 2단계).
+// 새 규칙을 받으면 여기에 한 줄씩 추가하면 돼요.
+const PLACE_ALIASES = {
+  "시드니": ["페더데일", "블루마운틴"],
+  "하와이": ["할레아칼라", "거북이스노쿨링+해양5종"],
+  "치앙마이": ["타마린드 빌리지"],
+  "도쿄": ["게이세이", "스카이라이너"], // 게이세이 스카이라이너 (나리타공항 ↔ 도쿄)
+  "마쓰야마": ["고와쿠엔", "도고온천"], // 고와쿠엔 하루카 / 도고온천은 마쓰야마에 있어요
+};
+Object.entries(PLACE_ALIASES).forEach(([name, aliases]) => {
+  const d = DESTINATIONS.find((x) => x.name === name);
+  if (d) d.keywords.push(...aliases);
+  else console.warn(`[PLACE_ALIASES] '${name}'은(는) DESTINATIONS에 없는 지역이에요. 먼저 D("${name}", ...)를 추가해주세요.`);
+});
 // 상품 유형 사전: [화면에 보일 유형 이름, ...찾을 키워드]. 위에 있는 유형부터 먼저 찾아요.
 const PRODUCT_TYPES = [
   ["이심", "이심", "esim", "e-sim"], ["유심", "유심", "usim"], ["와이파이", "와이파이", "포켓와이파이"],
@@ -108,14 +125,13 @@ function findKeyword(text, kw) {
   }
   return text.indexOf(kw);
 }
-function matchDestination(text) {
-  if (!text) return null;
-  let src = String(text);
-  // 지울 표현은 같은 길이의 공백으로 바꿔서, 다른 지명의 위치(먼저 나온 순서)는 그대로 둬요.
-  MATCH_IGNORE.forEach((w) => { src = src.split(w).join(" ".repeat(w.length)); });
+// 텍스트에서 가장 알맞은 지명 하나를 골라요. normalize: 키워드를 비교 전에 바꾸는 함수 (2단계에서 띄어쓰기 제거용)
+function bestDestination(src, normalize) {
   let best = null;
   DESTINATIONS.forEach((d) => {
-    d.keywords.forEach((kw) => {
+    d.keywords.forEach((raw) => {
+      const kw = normalize(raw);
+      if (!kw) return;
       const idx = findKeyword(src, kw);
       if (idx < 0) return;
       const better = !best
@@ -125,6 +141,20 @@ function matchDestination(text) {
     });
   });
   return best ? { name: best.d.name, region: best.d.region } : null;
+}
+function matchDestination(text) {
+  if (!text) return null;
+  let src = String(text);
+  // 지울 표현은 같은 길이의 공백으로 바꿔서, 다른 지명의 위치(먼저 나온 순서)는 그대로 둬요.
+  MATCH_IGNORE.forEach((w) => { src = src.split(w).join(" ".repeat(w.length)); });
+  // 1단계: 그대로 찾기. 2단계: 그래도 못 찾았을 때만 텍스트와 키워드의 띄어쓰기를 모두 지우고 다시 찾기.
+  // ("블루 마운틴" ↔ "블루마운틴", "타마린드빌리지" ↔ "타마린드 빌리지") 2단계를 마지막에만 써서, 이미 잘 찾던 결과는 바뀌지 않아요.
+  // 2단계는 4글자 이상 키워드만 써요. 짧은 지명은 띄어쓰기를 지우면 우연히 생겨요. ("필로 마사지" → 로마, "부 산책로" → 부산)
+  return bestDestination(src, (kw) => kw)
+    || bestDestination(src.replace(/\s+/g, ""), (kw) => {
+      const compact = kw.replace(/\s+/g, "");
+      return compact.length >= 4 ? compact : "";
+    });
 }
 // 수동 태그는 Firestore "region-tags"에 { 태그키: { region, destination } } 형태로 저장돼요.
 // 상품 태그 키는 '핵심 이름'(productGroupKey) 기준이라, 문구만 다른 이름들이 같은 태그를 같이 써요.
