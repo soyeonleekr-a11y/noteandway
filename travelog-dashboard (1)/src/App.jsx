@@ -1062,9 +1062,13 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
 
       // 프론트에서 Anthropic API를 직접 호출하지 않고, API 키를 안전하게 보관하는
       // Netlify Function(netlify/functions/consult.js)을 통해 호출해요.
+      // 함수는 "로그인한 허용 계정"만 받아주기 때문에, 로그인 증명서(ID 토큰)를 같이 보내요.
+      // getIdToken()은 만료가 가까우면 알아서 새로 받아와요.
+      const token = await auth.currentUser?.getIdToken();
+      if (!token) throw new Error("로그인 정보를 확인할 수 없어요. 로그아웃 후 다시 로그인해주세요.");
       const response = await fetch("/.netlify/functions/consult", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ prompt }),
       });
       if (!response.ok) {

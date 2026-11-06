@@ -76,7 +76,8 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
 1. ~~배포 연결 해결~~ **완료** (자동 배포 확인). 남은 것: 컨설팅 버튼이 실제로 동작하는지, Netlify 환경변수에 `ANTHROPIC_API_KEY`가 있는지 확인.
 2. **보안 (중요)**
    - ✅ 완료: Google 로그인(강아지 잠금 교체), `allowedUsers/{이메일}` 허용 목록, `firestore.rules` 게시 (하연이가 콘솔 설정을 마쳤다고 알려줌)
-   - ⬜ 남음: **컨설팅 함수(`netlify/functions/consult.js`)가 로그인 확인 없이 열려 있어.** 주소를 아는 누구나 하연이 API 키로 Claude를 호출할 수 있어. 요청에 Firebase 로그인 토큰을 실어 보내고, 함수에서 검증 + 허용 목록 확인을 하게 바꿔야 해. 그 전에 Anthropic 콘솔에서 월 사용 한도를 낮게 걸어두면 안전해.
+   - ✅ 코드 완료 (PR: hayeon/consult-auth): 컨설팅 함수(`netlify/functions/consult.js`)가 로그인 토큰(Authorization: Bearer)을 받아서, 그 토큰으로 Firestore `allowedUsers/{이메일}`을 읽을 수 있을 때만 Anthropic을 호출해. 확인이 안 되면 항상 막는 쪽으로 처리하고, 프롬프트는 10,000자까지만 받아. 허용 목록은 Firestore 규칙을 그대로 따라가.
+   - ⬜ 남음: 배포 후 **실제 로그인한 상태로 컨설팅 버튼이 되는지** 확인 (진짜 토큰으로는 아직 못 해봤어). Anthropic 콘솔에서 월 사용 한도도 걸어두면 안전해.
    - ⬜ 확인: Firebase Authentication에서 익명 로그인이 꺼져 있는지.
 3. **지역 분류 개선** (`DESTINATIONS`, `matchDestination`) — PR: hayeon/region-classify
    - 매출 대부분이 '기타'로 빠져서 인사이트 '종합 TOP 10' 1위가 '기타'로 나왔어.
