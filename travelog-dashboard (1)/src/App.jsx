@@ -242,9 +242,15 @@ function groupProducts(products) {
 // 열 이름을 정확히 아는 플랫폼은 여기에 적어두고, 그 이름(띄어쓰기 무시)으로만 찾아요.
 // 비슷한 단어로 찾으면 '판매 금액'(고객 결제액)을 수익으로 잘못 읽을 수 있어서예요.
 // 여기에 없는 플랫폼은 예전처럼 '상품'·'수익/매출/금액'·'수량' 단어가 든 첫 열을 써요.
+// 일부 열만 아는 플랫폼은 아는 열만 적어요. 안 적은 열(name/qty)은 예전처럼 단어로 찾아요.
 const PLATFORM_COLUMNS = {
   "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", category: "상품군" },
+  "여기어때": { revenue: "정산금액" }, // '총 실적 인정 금액'이 아니라 '정산금액'이 수익 (하연이 확인)
 };
+const COLUMN_LABELS = { name: "상품명", revenue: "수익", qty: "수량", category: "상품군" };
+function sameHeader(a, b) {
+  return String(a ?? "").replace(/\s+/g, "") === String(b ?? "").replace(/\s+/g, "");
+}
 function exactHeader(row, header) {
   const want = String(header).replace(/\s+/g, "");
   return Object.keys(row || {}).find((k) => String(k).replace(/\s+/g, "") === want) || null;
@@ -773,23 +779,16 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       if (!rows.length) throw new Error("empty");
-      const profile = PLATFORM_COLUMNS[platform];
-      let nameKey, revKey, qtyKey, categoryKey;
-      if (profile) {
-        // 열 이름을 아는 플랫폼: 정확한 이름으로만 찾고, 없으면 엉뚱한 열을 읽지 않게 멈춰요.
-        nameKey = exactHeader(rows[0], profile.name);
-        revKey = exactHeader(rows[0], profile.revenue);
-        qtyKey = profile.qty ? exactHeader(rows[0], profile.qty) : null;
-        categoryKey = profile.category ? exactHeader(rows[0], profile.category) : null;
-        const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k]) => !k).map(([, h]) => `'${h}'`);
-        if (missing.length) throw new Error(`${platform} 엑셀에서 ${missing.join(", ")} 열을 찾지 못했어요. 엑셀 첫 줄의 열 이름을 확인해주세요.`);
-      } else {
-        nameKey = findKey(rows[0], ["상품", "품목", "product", "Product"]);
-        revKey = findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
-        qtyKey = findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
-        categoryKey = null;
-        if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
-      }
+      const profile = PLATFORM_COLUMNS[platform] || {};
+      // 열 이름을 지정해둔 열은 그 이름으로만 찾고(없으면 엉뚱한 열을 읽지 않게 멈춰요),
+      // 지정 안 한 열은 예전처럼 단어가 들어간 첫 열을 써요.
+      const nameKey = profile.name ? exactHeader(rows[0], profile.name) : findKey(rows[0], ["상품", "품목", "product", "Product"]);
+      const revKey = profile.revenue ? exactHeader(rows[0], profile.revenue) : findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
+      const qtyKey = profile.qty ? exactHeader(rows[0], profile.qty) : findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
+      const categoryKey = profile.category ? exactHeader(rows[0], profile.category) : null;
+      const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k, h]) => h && !k).map(([, h]) => `'${h}'`);
+      if (missing.length) throw new Error(`${platform} 엑셀에서 ${missing.join(", ")} 열을 찾지 못했어요. 엑셀 첫 줄의 열 이름을 확인해주세요.`);
+      if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
 
       // 엑셀은 보통 한 줄 = 거래 1건이라 수량 열이 따로 없을 수 있어요.
       // 그래서 같은 상품명은 한 줄로 합치고, 수량 열이 없으면 등장 횟수를 판매수량으로 계산해요.
@@ -852,8 +851,10 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
   }, [current, sortField, sortDir]);
   const mergedCount = sortedProducts.filter((p) => p.variants.length > 1).length;
   const profile = PLATFORM_COLUMNS[platform];
-  // 열 이름 지정 전에 올린 달은 수익 열을 잘못 읽었을 수 있어요. (마이리얼트립: '판매 금액'을 수익으로 읽었을 가능성)
-  const needsReupload = !!(current && profile && !current.source);
+  const profileFields = profile ? Object.entries(profile) : []; // [["revenue", "정산금액"], ...]
+  // 수익 열을 지정한 플랫폼인데, 이 달이 그 열이 아닌 다른 열로 계산돼 있으면 다시 올려달라고 안내해요.
+  // (기록이 아예 없는 예전 데이터 + 열 지정 전에 다른 열로 올린 데이터 둘 다 해당)
+  const needsReupload = !!(current && profile?.revenue && !sameHeader(current.source?.revenue, profile.revenue));
 
   const visibleProducts = showAll ? sortedProducts : sortedProducts.slice(0, PAGE_SIZE);
   const hiddenCount = sortedProducts.length - visibleProducts.length;
@@ -881,7 +882,11 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
         </div>
         {profile ? (
           <div className="hint">
-            {platform} 엑셀은 <b>{profile.name}</b>, <b>{profile.revenue}</b>(수익), <b>{profile.qty}</b>{profile.category && <>, <b>{profile.category}</b></>} 열을 이름 그대로 찾아요. 문구만 다른 같은 상품은 한 줄로 묶어서 보여줘요.
+            {platform} 엑셀은{" "}
+            {profileFields.map(([field, header], i) => (
+              <React.Fragment key={field}>{i > 0 && ", "}<b>{header}</b>({COLUMN_LABELS[field]})</React.Fragment>
+            ))}{" "}
+            열을 이름 그대로 찾아요.{(!profile.name || !profile.qty) && " 상품명·수량 열은 단어로 찾으니 업로드 후 '읽은 열'을 확인해주세요."} 문구만 다른 같은 상품은 한 줄로 묶어서 보여줘요.
           </div>
         ) : (
           <div className="hint">헤더에 <b>상품명</b>과 <b>수익금(매출)</b> 열이 있으면 자동 인식해요. 같은 상품명은 자동으로 합쳐지고, 수량 열이 없으면 거래 건수를 판매수량으로 계산해요.</div>
@@ -894,7 +899,9 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 <AlertCircle size={15} />
                 <div>
                   <b>이 달은 정산 엑셀을 다시 올려주세요.</b><br />
-                  예전 방식으로 올린 데이터라 수익이 '{profile.revenue}'가 아닌 다른 열(예: 판매 금액)로 계산됐을 수 있어요. 같은 달을 다시 올리면 덮어써져요.
+                  {current.source?.revenue
+                    ? <>수익이 '{current.source.revenue}' 열로 계산돼 있어요. '{profile.revenue}' 열로 다시 계산하려면 같은 달을 다시 올려주세요. (덮어써져요)</>
+                    : <>예전 방식으로 올린 데이터라 수익이 '{profile.revenue}'가 아닌 다른 열로 계산됐을 수 있어요. 같은 달을 다시 올리면 덮어써져요.</>}
                 </div>
               </div>
             )}
