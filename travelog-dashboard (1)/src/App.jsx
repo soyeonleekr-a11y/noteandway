@@ -442,10 +442,11 @@ export default function App() {
   const monthPosts = (m) => blogNames.reduce((s, b) => s + (postsData[b]?.[m]?.posts || 0), 0);
   const monthViews = (m) => blogNames.reduce((s, b) => s + (postsData[b]?.[m]?.views || 0), 0);
 
+  // 데이터가 없는 달은 0이 아니라 null 로 둬요. 그래야 그래프가 ₩0으로 뚝 떨어지지 않고 그 달을 비워둬요.
   const trendData = useMemo(() => {
     return [...months].reverse().map((m) => {
       const row = { month: formatMonthLabel(m).replace("년 ", ".").replace("월", "") };
-      PLATFORMS.forEach((p) => { row[p] = platformData[p]?.[m]?.total || 0; });
+      PLATFORMS.forEach((p) => { row[p] = monthValueOrNull(platformData[p]?.[m]); });
       row["총합"] = monthTotal(m);
       return row;
     });
@@ -545,6 +546,32 @@ export default function App() {
   );
 }
 
+// ───────── 추이 그래프 도우미 ─────────
+// 그 달 데이터가 아예 없으면 null(빈칸), 있으면 총액. (총액이 0원인 달은 0으로 그대로 보여줘요)
+function monthValueOrNull(monthData) {
+  return monthData ? monthData.total || 0 : null;
+}
+function formatWonOrEmpty(v) {
+  return v == null ? "데이터 없음" : formatWon(v);
+}
+// 앞뒤 달 중 하나라도 비어서 실선으로 이어지지 않는 점(시작·끝·외톨이 달)에만 동그라미를 그려요.
+function edgeDot(data, key, color) {
+  return function renderEdgeDot(props) {
+    const { cx, cy, index } = props;
+    const v = data[index]?.[key];
+    const linkedBoth = data[index - 1]?.[key] != null && data[index + 1]?.[key] != null;
+    if (v == null || linkedBoth || cx == null || cy == null) return <g key={`${key}-dot-${index}`} />;
+    return <circle key={`${key}-dot-${index}`} cx={cx} cy={cy} r={3} fill="#1C324F" stroke={color} strokeWidth={2} />;
+  };
+}
+// 첫 데이터와 마지막 데이터 사이에 빈 달이 끼어 있는 플랫폼이 하나라도 있는지 (점선 안내문용)
+function hasTrendGap(data) {
+  return PLATFORMS.some((p) => {
+    const idx = data.map((row, i) => (row[p] != null ? i : -1)).filter((i) => i >= 0);
+    return idx.length > 1 && idx[idx.length - 1] - idx[0] + 1 > idx.length;
+  });
+}
+
 function OverviewTab({ months, selectedMonth, setSelectedMonth, platformData, blogNames, postsData, monthTotal, monthPosts, monthViews, trendData, pieData }) {
   const total = monthTotal(selectedMonth);
   const posts = monthPosts(selectedMonth);
@@ -585,13 +612,28 @@ function OverviewTab({ months, selectedMonth, setSelectedMonth, platformData, bl
               <CartesianGrid stroke="#2A3F5C" strokeDasharray="3 3" />
               <XAxis dataKey="month" tick={{ fill: "#93A2BC", fontSize: 11 }} />
               <YAxis tick={{ fill: "#93A2BC", fontSize: 11 }} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v)} />
-              <Tooltip contentStyle={{ background: "#16273F", border: "1px solid #2A3F5C", color: "#F4F1E8" }} formatter={(v) => formatWon(v)} />
+              <Tooltip contentStyle={{ background: "#16273F", border: "1px solid #2A3F5C", color: "#F4F1E8" }} formatter={formatWonOrEmpty} />
               <Legend wrapperStyle={{ fontSize: 12, color: "#93A2BC" }} />
+              {/* 1) 아래층: 데이터가 없는 달을 건너뛰어 이어주는 흐린 점선 (범례·툴팁에는 안 나와요) */}
               {PLATFORMS.map((p) => (
-                <Line key={p} type="monotone" dataKey={p} stroke={PLATFORM_COLOR[p]} strokeWidth={2} dot={false} />
+                <Line
+                  key={`${p}-bridge`} type="monotone" dataKey={p} stroke={PLATFORM_COLOR[p]} strokeWidth={1.5}
+                  strokeDasharray="4 4" strokeOpacity={0.45} dot={false} activeDot={false}
+                  connectNulls legendType="none" tooltipType="none" isAnimationActive={false}
+                />
+              ))}
+              {/* 2) 위층: 데이터가 이어지는 구간만 실선. 선으로 안 이어지는 달은 동그라미로 표시해요 */}
+              {PLATFORMS.map((p) => (
+                <Line
+                  key={p} type="monotone" dataKey={p} stroke={PLATFORM_COLOR[p]} strokeWidth={2}
+                  dot={edgeDot(trendData, p, PLATFORM_COLOR[p])}
+                />
               ))}
             </LineChart>
           </ResponsiveContainer>
+          {hasTrendGap(trendData) && (
+            <div className="hint">점선은 데이터가 없는 달을 건너뛰어 이은 구간이에요.</div>
+          )}
         </div>
 
         <div className="panel">
@@ -702,7 +744,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
 
   const compareData = [...months].slice(0, 6).reverse().map((m) => {
     const row = { month: formatMonthLabel(m).replace("년 ", ".").replace("월", "") };
-    PLATFORMS.forEach((p) => { row[p] = platformData[p]?.[m]?.total || 0; });
+    PLATFORMS.forEach((p) => { row[p] = monthValueOrNull(platformData[p]?.[m]); });
     return row;
   });
 
@@ -799,7 +841,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
             <CartesianGrid stroke="#2A3F5C" strokeDasharray="3 3" />
             <XAxis dataKey="month" tick={{ fill: "#93A2BC", fontSize: 11 }} />
             <YAxis tick={{ fill: "#93A2BC", fontSize: 11 }} tickFormatter={(v) => (v >= 10000 ? `${Math.round(v / 10000)}만` : v)} />
-            <Tooltip contentStyle={{ background: "#16273F", border: "1px solid #2A3F5C", color: "#F4F1E8" }} formatter={(v) => formatWon(v)} />
+            <Tooltip contentStyle={{ background: "#16273F", border: "1px solid #2A3F5C", color: "#F4F1E8" }} formatter={formatWonOrEmpty} />
             <Legend wrapperStyle={{ fontSize: 12, color: "#93A2BC" }} />
             {PLATFORMS.map((p) => <Bar key={p} dataKey={p} fill={PLATFORM_COLOR[p]} radius={[3, 3, 0, 0]} />)}
           </BarChart>
