@@ -1,7 +1,7 @@
 // Netlify 환경변수 ANTHROPIC_API_KEY 를 서버 쪽에서만 사용해 Anthropic API를 호출해요.
 // 프론트엔드(App.jsx)는 이 함수(/.netlify/functions/consult)만 호출하고,
 // API 키는 브라우저에 절대 노출되지 않아요.
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: JSON.stringify({ error: "허용되지 않은 메서드예요" }) };
   }
@@ -33,8 +33,8 @@ exports.handler = async (event) => {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-5",
-        max_tokens: 1000,
+        model: "claude-sonnet-5-5",
+        max_tokens: 4000,
         messages: [{ role: "user", content: prompt }],
         tools: [{ type: "web_search_20250305", name: "web_search" }],
       }),

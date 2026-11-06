@@ -951,7 +951,8 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
         throw new Error(detail || `컨설팅 서버 호출에 실패했어요 (상태 코드 ${response.status})`);
       }
       const data = await response.json();
-      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      // 웹 검색을 쓰면 답변이 인용 단위로 여러 text 블록에 나뉘어 와요. 줄바꿈 없이 이어 붙여야 JSON이 깨지지 않아요.
+      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
       const clean = text.replace(/```json|```/g, "").trim();
       const jsonStart = clean.indexOf("{");
       const jsonEnd = clean.lastIndexOf("}");
