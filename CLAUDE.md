@@ -45,20 +45,25 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
 - Firestore에 이미 저장된 데이터 구조를 바꿀 때는, 예전 형태도 읽을 수 있게 변환 코드를 넣어줘 (`normalizeProduct`처럼).
 - 실제 매출 데이터를 지우거나 덮어쓰는 코드는 실행하기 전에 하연이한테 먼저 물어봐.
 
+## 공개 저장소 주의
+- 2026-11-06부터 **저장소가 공개(public)야.** (Netlify 무료 플랜에서 하연이 커밋도 빌드되게 하려고 바꿈)
+- 매출 숫자, 이메일 같은 개인 정보는 커밋하지 말고 `CLAUDE.local.md`(커밋 안 됨)에 적어.
+- API 키는 Netlify 환경변수에만 둬. 코드나 커밋에 넣지 마.
+
 ## 배포 상태 (2026-11-06 기준, 확인 필요)
 - 컨설팅 502 수정(PR: hayeon/fix-consult)은 머지됐지만 **사이트에 반영되지 않았어.** 배포 파일 이름이 `assets/index-Dce6VQrB.js`로 그대로야.
-- 가장 유력한 원인: Netlify가 GitHub와 연결되지 않은 수동(드래그 앤 드롭) 배포.
-  → Netlify > Site configuration > Build & deploy에서 저장소 연결 여부를 확인하고, **Base directory를 `travelog-dashboard (1)`로** 설정해야 해.
-- 하연이가 Netlify 접근 권한을 받는 중이야. 받으면 `npx netlify login` → `npx netlify link`로 연결해서 배포 로그를 직접 확인해줘.
+- 동생이 Netlify와 GitHub를 연결하고 저장소를 공개로 바꿨어. 다음 머지 때 자동 배포되는지 확인해줘.
+  → 안 되면 Netlify > Site configuration > Build & deploy에서 **Base directory가 `travelog-dashboard (1)`인지** 확인해.
+- Netlify 권한을 받으면 `npx netlify login` → `npx netlify link`로 연결해서 배포 로그를 직접 확인해줘.
 
 ## 할 일 (우선순위 순)
 1. **배포 연결 해결** (위 내용) → 컨설팅 버튼이 실제로 동작하는지 확인. Netlify 환경변수에 `ANTHROPIC_API_KEY`가 있는지도 확인해.
 2. **보안 (중요)**: 지금 `firestore.rules`는 `request.auth != null`만 검사하는데 로그인이 익명 자동 로그인이야. 그래서 **사이트 주소를 아는 누구나 데이터를 읽고 쓰고 지울 수 있어.**
    - Firebase Auth에서 Google 로그인을 켜고, 앱의 PatternGate를 Google 로그인으로 교체
-   - 규칙을 허용 이메일 목록으로 제한 (예: `request.auth.token.email in ['leehayaon@gmail.com', '동생 이메일']` + `email_verified`)
+   - 규칙을 허용 이메일로 제한. 이메일은 규칙 파일에 적지 말고(공개 저장소라서) Firestore `allowedUsers/{이메일}` 문서로 등록 + `email_verified` 확인
    - 규칙은 Firebase 콘솔에 직접 게시해야 해. 하연이한테 단계별로 안내해줘.
-3. **지역 분류 개선** (`DESTINATIONS`, `matchDestination`)
-   - 지금은 매출 대부분이 '기타'로 빠져서 인사이트 '종합 TOP 10' 1위가 "기타 ₩26,628,227"로 나와.
+3. **지역 분류 개선** (`DESTINATIONS`, `matchDestination`) — PR: hayeon/region-classify
+   - 매출 대부분이 '기타'로 빠져서 인사이트 '종합 TOP 10' 1위가 '기타'로 나왔어.
    - 사전에 없는 지명: 제천, 설악산, 청송, 다카마쓰, 나오시마, 마쓰야마, 나고야, LA, 라스베가스, 그랜드캐년, 샌프란시스코, 요세미티, 인스파이어(인천), 북한산(서울) 등
    - 버그: `find()`가 배열 순서로 첫 매칭을 고르는 방식이라 "보코 서울 명동 … 싱가포르 뷔페"가 싱가포르로 분류돼. → **텍스트에서 가장 먼저 나오는 지명**을 고르게 바꾸거나, 국내 지명을 우선 매칭해.
    - 분류가 안 된 항목은 화면에서 직접 지역을 지정할 수 있게 (수동 태깅, Firestore에 저장)
@@ -73,7 +78,5 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
    - 조회수는 높은데 수익이 낮은 글, 시즌이 다가오는 글을 '다시 손볼 글'로 추천
    - 컨설팅 프롬프트를 '여행지 추천'에서 '다음 달 포스팅 리스트(플랫폼·코드 포함)'로 개선
 
-## 참고 데이터 (2026년 10월)
-- 총 매출 ₩11,425,863 (마이리얼트립 ₩7,927,118), 발행 122건, 조회수 131,456
-- 글당 조회수: 요니 1,547 (59건) / 짠순 638 (63건)
-- 요니 글당 조회수: 9월 2,779 → 10월 1,547 (약 −44%)
+## 참고 데이터
+- 매출·조회수 같은 실제 숫자는 `CLAUDE.local.md`에 있어.
