@@ -5,8 +5,11 @@
 //
 // 막는 것 (CLAUDE.md '금지사항'과 같은 내용):
 //   1. main/master 로 푸시, force 푸시(-f/--force), main 에서 바로 커밋
-//   2. PR 머지(gh pr merge) — 머지는 하연이가 직접
+//   2. 저장소를 망가뜨릴 수 있는 gh 명령 (저장소 삭제·설정 변경, gh api 삭제 요청, 관리자 권한 머지)
 //   3. 비밀값/개인정보 커밋: .env, CLAUDE.local.md, 엑셀·CSV, 인증서, API 키, 매출 숫자, 개인 이메일
+//
+// 확인창을 띄우는 것:
+//   - PR 머지(gh pr merge): 머지하면 바로 실제 사이트에 배포돼서, 하연이가 터미널 확인창에서 승인해야 실행돼요.
 //
 // 한계: Claude Code 안에서 실행되는 명령만 검사해요. 터미널에서 직접 입력한 git 명령은 막지 못해요.
 // 훅 자체가 고장 나면(파싱 오류 등) 작업을 막지 않고 통과시켜요.
@@ -44,6 +47,9 @@ const currentBranch = () => git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
 
 // ───────── 명령어를 (따옴표·heredoc 고려해서) 명령 단위로 쪼개기 ─────────
 // echo "git push origin main" 처럼 따옴표 안에 든 글자나 커밋 메시지 본문은 명령으로 보지 않아요.
+// 역슬래시: Bash는 따옴표 밖에선 다음 글자를 그대로, 큰따옴표 안에선 $ ` " \ 앞에서만 특수 문자로 써요.
+//           PowerShell은 역슬래시가 그냥 경로 구분자예요. (C:\Program Files\...)
+const IS_POWERSHELL = event?.tool_name === "PowerShell";
 function tokenize(src) {
   const segs = [[]];
   const pendingHeredocs = [];
@@ -63,12 +69,12 @@ function tokenize(src) {
     if (c === '"') {
       let j = i + 1; let s = "";
       while (j < src.length && src[j] !== '"') {
-        if (src[j] === "\\" && j + 1 < src.length) { s += src[j + 1]; j += 2; } else s += src[j++];
+        if (!IS_POWERSHELL && src[j] === "\\" && j + 1 < src.length && '$`"\\\n'.includes(src[j + 1])) { s += src[j + 1]; j += 2; } else s += src[j++];
       }
       cur = (cur ?? "") + s;
       i = j + 1; continue;
     }
-    if (c === "\\" && i + 1 < src.length) { cur = (cur ?? "") + src[i + 1]; i += 2; continue; }
+    if (!IS_POWERSHELL && c === "\\" && i + 1 < src.length) { cur = (cur ?? "") + src[i + 1]; i += 2; continue; }
     if (c === "<" && src[i + 1] === "<" && src[i + 2] !== "<") {
       const m = /^<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(src.slice(i));
       if (m) { pushTok(); pendingHeredocs.push(m[2]); i += m[0].length; continue; }
@@ -84,7 +90,8 @@ function tokenize(src) {
       }
       breakSeg(); continue;
     }
-    if (c === ";" || c === "|" || c === "&") {
+    // ; | & 와 괄호·중괄호도 명령의 경계로 봐요. (Bash: ( … ) $( … ) { …; }  /  PowerShell: if ($?) { … })
+    if (c === ";" || c === "|" || c === "&" || c === "(" || c === ")" || c === "{" || c === "}") {
       breakSeg();
       while (src[i] === c) i++;
       continue;
@@ -96,16 +103,21 @@ function tokenize(src) {
   return segs.filter((s) => s.length);
 }
 
-// 앞쪽의 FOO=bar 같은 환경변수 지정과 `command` 를 건너뛰고 실제 명령부터 돌려줘요.
+// 앞쪽의 FOO=bar 같은 환경변수 지정, `command`, 그리고 if/then/do 같은 문법 단어를 건너뛰고 실제 명령부터 돌려줘요.
+const PREFIX_WORDS = new Set(["command", "then", "else", "elif", "do", "!", "$", "time", "exec"]);
 function stripPrefix(tokens) {
   let k = 0;
-  while (k < tokens.length && (/^[A-Za-z_]\w*=/.test(tokens[k]) || tokens[k] === "command")) k++;
+  while (k < tokens.length && (/^[A-Za-z_]\w*=/.test(tokens[k]) || PREFIX_WORDS.has(tokens[k]))) k++;
   return tokens.slice(k);
 }
 
+// "C:\Program Files\GitHub CLI\gh.exe" 처럼 전체 경로로 실행해도 같은 명령으로 알아봐요.
+function commandName(token) {
+  return String(token ?? "").split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, "");
+}
+
 function parseGit(tokens) {
-  const base = tokens[0]?.split(/[\\/]/).pop();
-  if (base !== "git" && base !== "git.exe") return null;
+  if (commandName(tokens[0]) !== "git") return null;
   let i = 1;
   while (i < tokens.length && tokens[i].startsWith("-")) i += (tokens[i] === "-C" || tokens[i] === "-c") ? 2 : 1;
   return { sub: tokens[i], args: tokens.slice(i + 1) };
@@ -189,14 +201,38 @@ function checkCommit() {
   }
 }
 
+// gh 명령 검사. 확인창이 필요하면 이유 문자열을, 아니면 null 을 돌려줘요. 위험한 명령은 바로 막아요.
+function checkGh(args) {
+  const [group, action] = args;
+  const rest = args.slice(2);
+  if (group === "repo" && ["delete", "rename", "edit", "archive", "unarchive"].includes(action)) {
+    deny(`gh repo ${action} 는 저장소 자체를 바꾸는 명령이라 쓸 수 없어요.`);
+  }
+  if (group === "release" && action === "delete") deny("gh release delete 는 쓸 수 없어요.");
+  if (group === "api") {
+    const i = args.findIndex((a) => a === "-X" || a === "--method");
+    const method = (i >= 0 ? args[i + 1] : (args.find((a) => /^(-X|--method=)/.test(a)) || "").replace(/^(-X|--method=)/, "")).toUpperCase();
+    if (["DELETE", "PUT", "PATCH"].includes(method)) deny(`gh api ${method} 요청은 저장소 설정·데이터를 바꿀 수 있어서 쓸 수 없어요.`);
+  }
+  if (group === "pr" && action === "merge") {
+    if (rest.includes("--admin")) deny("gh pr merge --admin 은 보호 규칙을 무시하는 관리자 머지라서 쓸 수 없어요.");
+    const target = rest.find((a) => !a.startsWith("-")) || "(현재 브랜치의 PR)";
+    return `PR ${target} 을(를) main에 머지하려고 해요. 머지하면 바로 실제 사이트에 배포돼요. 하연이가 승인해야 진행돼요.`;
+  }
+  return null;
+}
+
 // ───────── 실행 ─────────
+let askReason = null;
 try {
   for (const seg of tokenize(cmd)) {
     const tokens = stripPrefix(seg);
     if (!tokens.length) continue;
 
-    if (tokens[0] === "gh" && tokens[1] === "pr" && tokens[2] === "merge") {
-      deny("PR 머지는 하연이가 확인하고 직접 해요. (gh pr merge 금지)");
+    const name = commandName(tokens[0]);
+    if (name === "gh") {
+      askReason = checkGh(tokens.slice(1)) || askReason;
+      continue;
     }
     const g = parseGit(tokens);
     if (!g) continue;
@@ -208,5 +244,16 @@ try {
   // 가드가 고장 나도 작업을 막지는 않아요.
   process.stderr.write(`[guard] 내부 오류로 검사를 건너뛰었어요: ${e?.message ?? e}\n`);
   process.exit(0);
+}
+
+// 막을 건 없지만 하연이 승인이 필요한 명령이면, Claude Code가 터미널에 확인창을 띄우게 해요.
+if (askReason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: `🔐 ${askReason}`,
+    },
+  }));
 }
 process.exit(0);
