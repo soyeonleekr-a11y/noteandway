@@ -165,19 +165,48 @@ function productTagKeys(platform, group) {
   const keys = [productTagKey(platform, group.name), ...group.variants.map((v) => legacyProductTagKey(platform, v))];
   return [...new Set(keys)];
 }
-// 묶인 상품(group)의 지역: 새 키 → 예전 키 순서로 직접 지정한 태그를 찾고, 없으면 사전으로 추정해요.
-function classifyProduct(platform, group, tags) {
+// 묶인 상품(group)의 지역: 새 키 → 예전 키 순서로 직접 지정한 태그를 찾고, 없으면 규칙·사전으로 추정해요.
+function classifyProduct(platform, group, tags, rules) {
   const keys = productTagKeys(platform, group);
   const hit = keys.find((k) => tags?.[k]);
-  return classifyText(group.name, tags, hit || keys[0]);
+  return classifyText(group.name, tags, hit || keys[0], rules);
 }
 function postTagKey(title) { return `post::${normalizeNameKey(title)}`; }
-// 직접 지정한 지역이 있으면 그걸 쓰고, 없으면 사전으로 추정해요.
-function classifyText(text, tags, tagKey) {
+
+// ───────── 하연이가 화면에서 추가하는 자동 분류 규칙 ─────────
+// Firestore "region-rules" = [{ keyword, destination, region, createdAt }]
+// "이 단어가 상품명·글 제목에 들어가면 항상 이 지역" 이라는 뜻이에요.
+function cleanRuleKeyword(s) {
+  return String(s ?? "").normalize("NFKC").trim();
+}
+// 텍스트에 들어 있는 규칙 중 가장 앞에 나오는 규칙 하나를 골라요. (대소문자 무시)
+// 1단계 그대로 → 못 찾으면 2단계 띄어쓰기 무시(4글자 이상 단어만, 짧은 단어는 우연히 생길 수 있어서)
+function matchRule(text, rules) {
+  if (!text || !rules?.length) return null;
+  const raw = String(text).normalize("NFKC").toLowerCase();
+  const pick = (src, norm) => {
+    let best = null;
+    rules.forEach((r) => {
+      const kw = norm(cleanRuleKeyword(r.keyword).toLowerCase());
+      if (!kw) return;
+      const idx = src.indexOf(kw);
+      if (idx < 0) return;
+      if (!best || idx < best.idx || (idx === best.idx && kw.length > best.len)) best = { rule: r, idx, len: kw.length };
+    });
+    return best ? best.rule : null;
+  };
+  return pick(raw, (k) => k)
+    || pick(raw.replace(/\s+/g, ""), (k) => { const c = k.replace(/\s+/g, ""); return c.length >= 4 ? c : ""; });
+}
+// 지역을 정하는 순서: ① 직접 지정한 지역 → ② 하연이 규칙 → ③ 기본 사전
+// rule: 어떤 규칙으로 정해졌는지 (화면에 '규칙: 페더데일'처럼 보여주고, 규칙별 적용 건수를 세는 데 써요)
+function classifyText(text, tags, tagKey, rules) {
   const tag = tags?.[tagKey];
-  if (tag) return { region: tag.region, destination: tag.destination, manual: true };
+  if (tag) return { region: tag.region, destination: tag.destination, manual: true, rule: null };
+  const r = matchRule(text, rules);
+  if (r) return { region: r.region, destination: r.destination, manual: false, rule: r.keyword };
   const d = matchDestination(text);
-  return d ? { region: d.region, destination: d.name, manual: false } : { region: "기타", destination: "기타", manual: false };
+  return d ? { region: d.region, destination: d.name, manual: false, rule: null } : { region: "기타", destination: "기타", manual: false, rule: null };
 }
 function matchProductType(text) {
   if (!text) return null;
@@ -522,6 +551,7 @@ export default function App() {
   const [blogNames, setBlogNames] = useState(["해외여행 블로그", "국내여행 블로그"]);
   const [consultingHistory, setConsultingHistory] = useState([]);
   const [regionTags, setRegionTags] = useState({});
+  const [regionRules, setRegionRules] = useState([]); // 하연이가 화면에서 추가한 자동 분류 규칙
   const [toast, setToast] = useState(null);
 
   // Firebase가 로그인 상태를 기억해서, 새로고침해도 다시 로그인할 필요가 없어요.
@@ -547,17 +577,19 @@ export default function App() {
     await signOut(auth);
     // 다른 계정으로 다시 로그인할 때 이전 데이터가 잠깐 보이지 않게 비워요.
     setLoaded(false);
-    setPlatformData({}); setPostsData({}); setPostRecords({}); setConsultingHistory([]); setRegionTags({});
+    setPlatformData({}); setPostsData({}); setPostRecords({}); setConsultingHistory([]); setRegionTags({}); setRegionRules([]);
   }
 
   useEffect(() => {
     if (access !== "allowed") return;
     (async () => {
-      const [pd, bd, pr, bn, ch, rt] = await Promise.all([
+      const [pd, bd, pr, bn, ch, rt, rr] = await Promise.all([
         safeGet("platform-data"), safeGet("posts-data"), safeGet("post-records"),
         safeGet("blog-names"), safeGet("consulting-history"), safeGet("region-tags"),
+        safeGet("region-rules"),
       ]);
       if (rt) setRegionTags(rt);
+      if (Array.isArray(rr)) setRegionRules(rr);
       if (pd) setPlatformData(pd);
       if (bd) setPostsData(bd);
       if (pr) setPostRecords(pr);
@@ -578,6 +610,15 @@ export default function App() {
     setPlatformData(next);
     const ok = await safeSet("platform-data", next);
     if (!ok) showToast("저장에 실패했어요. 다시 시도해주세요.", "err");
+  }
+  // 자동 분류 규칙 저장. message: 성공했을 때 보여줄 안내 문구
+  async function updateRegionRules(next, message) {
+    const prev = regionRules;
+    setRegionRules(next);
+    const ok = await safeSet("region-rules", next);
+    if (!ok) { setRegionRules(prev); showToast("규칙 저장에 실패했어요. 다시 시도해주세요.", "err"); return false; }
+    if (message) showToast(message);
+    return true;
   }
   async function updatePostsData(next) {
     setPostsData(next);
@@ -688,7 +729,7 @@ export default function App() {
             months={months} postsData={postsData} updatePostsData={updatePostsData}
             postRecords={postRecords} updatePostRecords={updatePostRecords}
             blogNames={blogNames} updateBlogNames={updateBlogNames} showToast={showToast}
-            regionTags={regionTags}
+            regionTags={regionTags} regionRules={regionRules}
           />
         )}
         {activeTab === "consulting" && (
@@ -702,6 +743,7 @@ export default function App() {
           <InsightTab
             months={months} platformData={platformData} postRecords={postRecords} blogNames={blogNames}
             regionTags={regionTags} updateRegionTag={updateRegionTag}
+            regionRules={regionRules} updateRegionRules={updateRegionRules}
           />
         )}
       </main>
@@ -1143,7 +1185,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
   );
 }
 
-function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostRecords, blogNames, updateBlogNames, showToast, regionTags }) {
+function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostRecords, blogNames, updateBlogNames, showToast, regionTags, regionRules }) {
   const [blog, setBlog] = useState(blogNames[0]);
   const [month, setMonth] = useState(currentMonth());
   const [postsInput, setPostsInput] = useState("");
@@ -1232,10 +1274,10 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
   const records = useMemo(
     () => (postRecords[blog]?.[month] || []).map((r) => ({
       ...r,
-      ...classifyText(r.title, regionTags, postTagKey(r.title)),
+      ...classifyText(r.title, regionTags, postTagKey(r.title), regionRules),
       productType: matchProductType(r.title) || "-", // 예전에 "esim"으로 저장된 글도 "이심"으로 보여요
     })),
-    [postRecords, blog, month, regionTags],
+    [postRecords, blog, month, regionTags, regionRules],
   );
   const destAnalysis = useMemo(() => {
     const map = {};
@@ -1542,7 +1584,7 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
   );
 }
 
-function InsightTab({ months, platformData, postRecords, blogNames, regionTags, updateRegionTag }) {
+function InsightTab({ months, platformData, postRecords, blogNames, regionTags, updateRegionTag, regionRules, updateRegionRules }) {
   const [scope, setScope] = useState("all");
 
   // 같은 상품이 여러 달에 걸쳐, 또는 문구만 다른 이름으로 여러 줄 나와도 플랫폼별로 하나로 합쳐서 집계해요.
@@ -1555,12 +1597,12 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
         list.push(...(data.products || []));
       });
       groupProducts(list).forEach((g) => {
-        const c = classifyProduct(p, g, regionTags);
+        const c = classifyProduct(p, g, regionTags, regionRules);
         out.push({ ...g, platform: p, region: c.region, destination: c.destination, productType: classifyProductType(p, g.name, g.category) });
       });
     });
     return out;
-  }, [platformData, scope, regionTags]);
+  }, [platformData, scope, regionTags, regionRules]);
 
   const allPosts = useMemo(() => {
     const list = [];
@@ -1568,11 +1610,11 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
       const monthsObj = postRecords[b] || {};
       Object.entries(monthsObj).forEach(([m, records]) => {
         if (scope !== "all" && m !== scope) return;
-        records.forEach((r) => list.push({ ...r, ...classifyText(r.title, regionTags, postTagKey(r.title)), blog: b, month: m }));
+        records.forEach((r) => list.push({ ...r, ...classifyText(r.title, regionTags, postTagKey(r.title), regionRules), blog: b, month: m }));
       });
     });
     return list;
-  }, [postRecords, blogNames, scope, regionTags]);
+  }, [postRecords, blogNames, scope, regionTags, regionRules]);
 
   // 지역 직접 지정용 목록: 기간 선택과 상관없이 전체 기간의 상품·글을 하나씩만 모아요.
   const taggableItems = useMemo(() => {
@@ -1582,20 +1624,20 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
       groupProducts(list).forEach((g) => {
         const key = productTagKey(p, g.name);
         // cleanupKeys: 저장·해제할 때 예전 방식(원래 이름) 태그도 같이 정리하려고 들고 있어요.
-        map[key] = { key, cleanupKeys: productTagKeys(p, g), kind: "상품", name: g.name, variants: g.variants, source: p, revenue: g.totalRevenue, views: 0, ...classifyProduct(p, g, regionTags) };
+        map[key] = { key, cleanupKeys: productTagKeys(p, g), kind: "상품", name: g.name, variants: g.variants, source: p, revenue: g.totalRevenue, views: 0, ...classifyProduct(p, g, regionTags, regionRules) };
       });
     });
     blogNames.forEach((b) => {
       Object.values(postRecords[b] || {}).forEach((records) => {
         records.forEach((r) => {
           const key = postTagKey(r.title);
-          if (!map[key]) map[key] = { key, kind: "글", name: r.title, source: b, revenue: 0, views: 0, ...classifyText(r.title, regionTags, key) };
+          if (!map[key]) map[key] = { key, kind: "글", name: r.title, source: b, revenue: 0, views: 0, ...classifyText(r.title, regionTags, key, regionRules) };
           map[key].views += r.views || 0;
         });
       });
     });
     return Object.values(map).sort((a, b) => b.revenue - a.revenue || b.views - a.views);
-  }, [platformData, postRecords, blogNames, regionTags]);
+  }, [platformData, postRecords, blogNames, regionTags, regionRules]);
 
   const revenueTop10 = useMemo(() => [...allProducts].sort((a, b) => b.totalRevenue - a.totalRevenue).slice(0, 10), [allProducts]);
   const qtyTop10 = useMemo(() => [...allProducts].sort((a, b) => b.qty - a.qty).slice(0, 10), [allProducts]);
@@ -1762,7 +1804,10 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
 
           <RateComparePanel platformData={platformData} scope={scope} />
 
-          <RegionTagPanel items={taggableItems} regionTags={regionTags} onSave={updateRegionTag} />
+          <RegionTagPanel
+            items={taggableItems} regionTags={regionTags} onSave={updateRegionTag}
+            rules={regionRules} onRulesChange={updateRegionRules}
+          />
         </>
       )}
     </div>
@@ -1910,8 +1955,114 @@ function RateComparePanel({ platformData, scope }) {
   );
 }
 
+// 자동 분류 규칙 편집: "단어 → 지역". 입력하는 동안 어떤 항목이 바로 분류되는지 미리 보여줘요.
+const RULE_MIN_LENGTH = 2; // 한 글자 규칙은 너무 많은 상품에 걸려서 막아요
+function RuleEditor({ rules, onRulesChange, items }) {
+  const [keyword, setKeyword] = useState("");
+  const [destination, setDestination] = useState("");
+  const [region, setRegion] = useState("해외");
+  const [saving, setSaving] = useState(false);
+
+  const kw = cleanRuleKeyword(keyword);
+  const dest = destination.trim();
+  const sameKw = (a, b) => cleanRuleKeyword(a).toLowerCase() === cleanRuleKeyword(b).toLowerCase();
+  const existing = rules.find((r) => sameKw(r.keyword, kw));
+  const valid = kw.length >= RULE_MIN_LENGTH && dest.length > 0;
+
+  // 미리보기: 이 단어가 들어간 항목 중 ① 지금 미분류인 것 ② 다른 지역으로 자동 분류돼 있어서 바뀌게 될 것
+  const preview = useMemo(() => {
+    if (kw.length < RULE_MIN_LENGTH) return { fill: [], change: [] };
+    const probe = [{ keyword: kw }];
+    const hits = items.filter((i) => !i.manual && matchRule(i.name, probe));
+    return {
+      fill: hits.filter((i) => i.region === "기타"),
+      change: dest ? hits.filter((i) => i.region !== "기타" && i.destination !== dest) : [],
+    };
+  }, [kw, dest, items]);
+
+  // 사전 지명이나 이미 쓴 규칙 지역을 고르면 국내/해외도 자동으로 맞춰요.
+  function changeDestination(v) {
+    setDestination(v);
+    const known = DESTINATIONS.find((x) => x.name === v.trim()) || rules.find((x) => x.destination === v.trim());
+    if (known) setRegion(known.region);
+  }
+  async function add() {
+    if (!valid || saving) return;
+    const rule = { keyword: kw, destination: dest, region, createdAt: new Date().toISOString() };
+    const next = existing ? rules.map((r) => (r === existing ? rule : r)) : [rule, ...rules];
+    const filled = preview.fill.length ? ` · 미분류 ${preview.fill.length}건 분류` : "";
+    setSaving(true);
+    const ok = await onRulesChange(next, existing ? `'${kw}' 규칙을 바꿨어요${filled}` : `'${kw}' → ${dest} 규칙을 추가했어요${filled}`);
+    setSaving(false);
+    if (ok) { setKeyword(""); setDestination(""); }
+  }
+  async function remove(rule) {
+    await onRulesChange(rules.filter((r) => r !== rule), `'${rule.keyword}' 규칙을 지웠어요`);
+  }
+  const appliedCount = (rule) => items.filter((i) => i.rule === rule.keyword).length;
+  const names = (list) => list.slice(0, 3).map((i) => i.name).join(", ") + (list.length > 3 ? ` 외 ${list.length - 3}건` : "");
+
+  return (
+    <div className="rule-box">
+      <div className="rule-head">
+        <span className="rule-title">📌 자동 분류 규칙</span>
+        <span className="rule-desc">이 단어가 상품명·글 제목에 들어가면 항상 이 지역으로 분류해요. 직접 지정한 지역이 가장 우선이에요.</span>
+      </div>
+      <div className="rule-form">
+        <input
+          className="text-input rule-keyword" value={keyword} placeholder="단어 (예: 페더데일)"
+          onChange={(e) => setKeyword(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+        />
+        <span className="rule-arrow" aria-hidden="true">→</span>
+        <select className="select" value={region} onChange={(e) => setRegion(e.target.value)}>
+          <option value="해외">해외</option>
+          <option value="국내">국내</option>
+        </select>
+        <input
+          className="text-input rule-dest" list="destination-options" value={destination} placeholder="지역 (예: 시드니)"
+          onChange={(e) => changeDestination(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+        />
+        <button className="primary-btn small" disabled={!valid || saving} onClick={add}>
+          {saving ? <Loader2 size={13} className="spin" /> : existing ? "규칙 바꾸기" : "규칙 추가"}
+        </button>
+      </div>
+
+      {kw.length > 0 && kw.length < RULE_MIN_LENGTH && (
+        <div className="rule-preview">두 글자 이상 입력해주세요. 한 글자는 너무 많은 상품에 걸려요.</div>
+      )}
+      {kw.length >= RULE_MIN_LENGTH && (
+        <div className="rule-preview">
+          {existing && <div>이미 있는 규칙이에요: <b>{existing.keyword} → {existing.destination}</b>. 추가하면 새 지역으로 바뀌어요.</div>}
+          {preview.fill.length
+            ? <div>미분류 <b>{preview.fill.length}건</b>이 바로 분류돼요: {names(preview.fill)}</div>
+            : <div>이 단어가 들어간 미분류 항목은 지금 없어요. 앞으로 올리는 엑셀에도 적용돼요.</div>}
+          {preview.change.length > 0 && (
+            <div className="rule-warn">이미 다른 지역으로 분류된 <b>{preview.change.length}건</b>도 '{dest}'(으)로 바뀌어요: {names(preview.change)}</div>
+          )}
+        </div>
+      )}
+
+      {rules.length > 0 && (
+        <div className="rule-list">
+          {rules.map((r) => (
+            <span key={r.keyword} className="rule-chip" title={r.createdAt ? `추가: ${r.createdAt.slice(0, 10)}` : undefined}>
+              <b>{r.keyword}</b>
+              <span className="rule-chip-arrow">→</span>
+              {r.destination}
+              <span className="rule-chip-meta">{r.region} · {appliedCount(r)}건</span>
+              <button className="rule-chip-x" onClick={() => remove(r)} title={`'${r.keyword}' 규칙 지우기`} aria-label={`'${r.keyword}' 규칙 지우기`}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TAG_PAGE_SIZE = 15;
-function RegionTagPanel({ items, regionTags, onSave }) {
+function RegionTagPanel({ items, regionTags, onSave, rules = [], onRulesChange }) {
   const [mode, setMode] = useState("untagged"); // untagged: 미분류 / manual: 직접 지정한 항목
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(TAG_PAGE_SIZE);
@@ -1922,12 +2073,13 @@ function RegionTagPanel({ items, regionTags, onSave }) {
   const list = q ? items.filter((i) => i.name.includes(q)) : mode === "manual" ? manual : untagged;
   const untaggedRevenue = untagged.reduce((s, i) => s + i.revenue, 0);
 
-  // 자동완성 후보: 사전 지명 + 직접 입력했던 지명
+  // 자동완성 후보: 사전 지명 + 직접 입력했던 지명 + 규칙에 쓴 지명
   const destOptions = useMemo(() => {
     const set = new Set(DESTINATIONS.map((d) => d.name));
     Object.values(regionTags || {}).forEach((t) => set.add(t.destination));
+    rules.forEach((r) => set.add(r.destination));
     return [...set];
-  }, [regionTags]);
+  }, [regionTags, rules]);
 
   function switchMode(m) { setMode(m); setQuery(""); setLimit(TAG_PAGE_SIZE); }
 
@@ -1938,6 +2090,7 @@ function RegionTagPanel({ items, regionTags, onSave }) {
         지역을 찾지 못해 '기타'로 빠진 항목이에요. 지역을 지정하면 위의 모든 표와 블로그 운영 탭에 바로 반영돼요.
         {untagged.length > 0 && <> 지금 미분류: <b>{untagged.length}건 · {formatWon(untaggedRevenue)}</b></>}
       </div>
+      {onRulesChange && <RuleEditor rules={rules} onRulesChange={onRulesChange} items={items} />}
       <div className="tag-toolbar">
         <div className="seg">
           <button className={`ghost-btn ${!q && mode === "untagged" ? "active" : ""}`} onClick={() => switchMode("untagged")}>미분류 {untagged.length}</button>
@@ -2003,7 +2156,7 @@ function TagRow({ item, onSave }) {
       <td className="tag-name">
         {item.name}
         <div className="tag-sub">
-          {item.source} · 지금: {item.destination}{item.manual ? " (직접 지정)" : known ? " (자동)" : ""}
+          {item.source} · 지금: {item.destination}{item.manual ? " (직접 지정)" : item.rule ? ` (규칙: ${item.rule})` : known ? " (자동)" : ""}
           {item.variants?.length > 1 && ` · 비슷한 이름 ${item.variants.length}개를 묶었어요`}
         </div>
       </td>
@@ -2282,6 +2435,35 @@ function Style() {
       .tag-controls .text-input { min-width: 0; width: 130px; padding: 7px 9px; }
       .primary-btn.small { padding: 7px 12px; font-size: 12px; white-space: nowrap; }
       .tag-more { margin: 12px auto 0; }
+
+      /* 자동 분류 규칙 */
+      .rule-box { background: #16273F; border: 1px solid #2A3F5C; border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+      .rule-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 10px; }
+      .rule-title { font-size: 13px; font-weight: 600; color: #F4F1E8; }
+      .rule-desc { font-size: 12px; color: #56698c; }
+      .rule-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .rule-form .text-input { min-width: 0; padding: 8px 10px; }
+      .rule-form .select { padding: 8px; }
+      .rule-keyword { flex: 1 1 180px; }
+      .rule-dest { flex: 1 1 150px; }
+      .rule-arrow { color: #E8A33D; font-weight: 700; }
+      .rule-preview { margin-top: 10px; font-size: 12px; color: #93A2BC; line-height: 1.6; display: flex; flex-direction: column; gap: 2px; }
+      .rule-preview b { color: #F4F1E8; }
+      .rule-warn { color: #E8A33D; }
+      .rule-warn b { color: #E8A33D; }
+      .rule-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #2A3F5C; }
+      .rule-chip {
+        display: inline-flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; border-radius: 999px;
+        background: #1C324F; border: 1px solid #2A3F5C; font-size: 12px; color: #d7dced;
+      }
+      .rule-chip b { color: #F4F1E8; font-weight: 600; }
+      .rule-chip-arrow { color: #E8A33D; }
+      .rule-chip-meta { font-size: 11px; color: #56698c; }
+      .rule-chip-x {
+        width: 20px; height: 20px; border-radius: 50%; border: none; background: transparent; color: #56698c;
+        font-size: 14px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+      }
+      .rule-chip-x:hover { background: rgba(239,91,91,0.15); color: #EF5B5B; }
       .reco-name { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
       .reco-reason { font-size: 12px; color: #93A2BC; line-height: 1.5; margin-bottom: 8px; }
       .reco-idea { font-size: 12px; color: #d7dced; background: #1C324F; padding: 6px 8px; border-radius: 6px; }
