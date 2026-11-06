@@ -86,10 +86,20 @@ const DESTINATIONS = [
 ];
 // 지명이 다른 단어 속에 들어 있어서 잘못 잡히는 표현 ("아로마 마사지" → 로마, "제주항공 오사카" → 제주)
 const MATCH_IGNORE = ["제주항공", "아로마", "세부사항", "세부 사항", "상세"];
+// 상품 유형 사전: [화면에 보일 유형 이름, ...찾을 키워드]. 위에 있는 유형부터 먼저 찾아요.
 const PRODUCT_TYPES = [
-  "항공권", "호텔", "풀빌라", "펜션", "숙소", "렌터카", "투어", "액티비티", "티켓",
-  "입장권", "스파", "크루즈", "유심", "esim", "와이파이", "여행자보험", "골프",
+  ["이심", "이심", "esim", "e-sim"], ["유심", "유심", "usim"], ["와이파이", "와이파이", "포켓와이파이"],
+  ["항공권", "항공권"], ["풀빌라", "풀빌라"], ["펜션", "펜션"], ["호텔", "호텔"], ["숙소", "숙소"],
+  ["렌터카", "렌터카", "렌트카"], ["크루즈", "크루즈"], ["골프", "골프"], ["스파", "스파"],
+  ["입장권", "입장권"], ["티켓", "티켓"], ["액티비티", "액티비티"], ["투어", "투어"],
+  ["여행자보험", "여행자보험"],
 ];
+// 마이리얼트립 정산 엑셀에서 상품명이 나라 이름 하나뿐인 줄("중국", "일본")은 마이심 이심 상품이에요.
+// 나라 단위 지명 + 이심을 따로 파는 도시형 국가(홍콩·마카오·싱가포르)를 기준으로 봐요.
+const ESIM_PLAIN_NAMES = new Set([
+  ...DESTINATIONS.filter((d) => d.country && d.region === "해외").flatMap((d) => d.keywords),
+  "홍콩", "마카오", "싱가포르",
+]);
 // 영문 키워드(LA, USJ)는 "PLAZA"처럼 다른 단어 속에 들어간 경우를 빼고 찾아요.
 function findKeyword(text, kw) {
   if (/^[A-Za-z]+$/.test(kw)) {
@@ -128,8 +138,33 @@ function classifyText(text, tags, tagKey) {
 }
 function matchProductType(text) {
   if (!text) return null;
-  const found = PRODUCT_TYPES.find((p) => text.toLowerCase().includes(p.toLowerCase()));
-  return found || null;
+  const lower = String(text).toLowerCase();
+  const found = PRODUCT_TYPES.find(([, ...keywords]) => keywords.some((k) => lower.includes(k.toLowerCase())));
+  return found ? found[0] : null;
+}
+// 플랫폼 매출 상품의 유형. 이름에 키워드가 없어도 플랫폼별 규칙으로 알아낼 수 있는 건 여기서 처리해요.
+function classifyProductType(platform, name) {
+  if (platform === "마이리얼트립" && ESIM_PLAIN_NAMES.has(normalizeNameKey(name))) return "이심";
+  return matchProductType(name);
+}
+// 상품명 옆에 유형 배지를 붙여서 보여줘요. (유형을 모르면 이름만)
+function ProductName({ name, type }) {
+  return (
+    <span className="product-name">
+      {name}
+      {type && <span className="type-badge">{type}</span>}
+    </span>
+  );
+}
+// 매출이나 블로그 데이터가 하나라도 있는 가장 최근 달. 하나도 없으면 이번 달이에요.
+function latestDataMonth(platformData, postsData) {
+  const now = currentMonth();
+  const found = [platformData, postsData]
+    .flatMap((byKey) => Object.values(byKey || {}))
+    .flatMap((byMonth) => Object.keys(byMonth || {}))
+    .filter((m) => /^\d{4}-\d{2}$/.test(m) && m <= now)
+    .sort();
+  return found.length ? found[found.length - 1] : now;
 }
 // 예전 방식(엑셀 한 줄 = 상품 하나, revenue 필드만 존재)으로 저장된 데이터도
 // 새 형태({name, qty, unitRevenue, totalRevenue})로 안전하게 변환해서 읽어요.
@@ -360,6 +395,8 @@ export default function App() {
       if (pr) setPostRecords(pr);
       if (bn) setBlogNames(bn);
       if (ch) setConsultingHistory(ch);
+      // 첫 화면은 이번 달이 아니라 데이터가 있는 가장 최근 달을 보여줘요. (이번 달은 아직 정산 전이라 ₩0으로 보이니까)
+      setSelectedMonth(latestDataMonth(pd, bd));
       setLoaded(true);
     })();
   }, [access]);
@@ -519,6 +556,8 @@ function OverviewTab({ months, selectedMonth, setSelectedMonth, platformData, bl
       <div className="row-between">
         <h2 className="section-title"><Compass size={18} /> 이번 달 관제 현황</h2>
         <select className="month-select" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}>
+          {/* 최근 데이터가 12개월보다 오래됐으면 목록에 없어서, 그 달도 선택지로 넣어줘요 */}
+          {!months.includes(selectedMonth) && <option value={selectedMonth}>{formatMonthLabel(selectedMonth)}</option>}
           {months.map((m) => <option key={m} value={m}>{formatMonthLabel(m)}</option>)}
         </select>
       </div>
@@ -734,7 +773,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 {visibleProducts.map((p, i) => (
                   <tr key={`${p.name}-${i}`} className={i === 0 ? "top-row" : ""}>
                     <td>{i + 1}</td>
-                    <td>{p.name}</td>
+                    <td><ProductName name={p.name} type={classifyProductType(platform, p.name)} /></td>
                     <td>{p.qty}</td>
                     <td>{formatWon(p.unitRevenue)}</td>
                     <td>{formatWon(p.totalRevenue)}</td>
@@ -857,7 +896,11 @@ function PostsTab({ months, postsData, updatePostsData, postRecords, updatePostR
 
   // 업로드할 때 저장된 지역 대신, 최신 사전 + 직접 지정한 지역으로 다시 분류해요. (예전에 올린 글도 바로 반영)
   const records = useMemo(
-    () => (postRecords[blog]?.[month] || []).map((r) => ({ ...r, ...classifyText(r.title, regionTags, postTagKey(r.title)) })),
+    () => (postRecords[blog]?.[month] || []).map((r) => ({
+      ...r,
+      ...classifyText(r.title, regionTags, postTagKey(r.title)),
+      productType: matchProductType(r.title) || "-", // 예전에 "esim"으로 저장된 글도 "이심"으로 보여요
+    })),
     [postRecords, blog, month, regionTags],
   );
   const destAnalysis = useMemo(() => {
@@ -1183,6 +1226,7 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
             map[key] = {
               name: prod.name, platform: p, qty: 0, totalRevenue: 0,
               region: c.region, destination: c.destination,
+              productType: classifyProductType(p, prod.name),
             };
           }
           map[key].qty += prod.qty;
@@ -1295,7 +1339,7 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
                       <td>{i + 1}</td>
                       <td><span className={regionBadge(p.region)}>{p.region}</span></td>
                       <td>{p.destination}</td>
-                      <td>{p.name}</td>
+                      <td><ProductName name={p.name} type={p.productType} /></td>
                       <td>{p.platform}</td>
                       <td>{formatWon(p.totalRevenue)}</td>
                     </tr>
@@ -1316,7 +1360,7 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
                       <td>{i + 1}</td>
                       <td><span className={regionBadge(p.region)}>{p.region}</span></td>
                       <td>{p.destination}</td>
-                      <td>{p.name}</td>
+                      <td><ProductName name={p.name} type={p.productType} /></td>
                       <td>{p.platform}</td>
                       <td>{p.qty.toLocaleString("ko-KR")}건</td>
                     </tr>
@@ -1703,6 +1747,13 @@ function Style() {
       .badge-intl { background: rgba(91,141,239,0.18); color: #5B8DEF; }
       .badge-domestic { background: rgba(232,163,61,0.18); color: #E8A33D; }
       .badge-etc { background: rgba(147,162,188,0.18); color: #93A2BC; }
+      .product-name { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+      .type-badge {
+        display: inline-block; font-size: 10px; font-weight: 600; line-height: 1; padding: 3px 6px;
+        border-radius: 4px; border: 1px solid rgba(232,163,61,0.45); color: #E8A33D;
+        letter-spacing: 0.3px; white-space: nowrap;
+      }
+      .table .top-row .type-badge { font-weight: 700; }
 
       .tag-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
       .seg { display: flex; gap: 6px; }
