@@ -192,7 +192,9 @@ function normalizeProduct(prod) {
   const totalRevenue = prod.totalRevenue != null ? prod.totalRevenue : (prod.revenue || 0);
   const qty = prod.qty != null ? prod.qty : 1;
   const unitRevenue = prod.unitRevenue != null ? prod.unitRevenue : (qty ? totalRevenue / qty : totalRevenue);
-  return { name: prod.name, qty, unitRevenue, totalRevenue, category: prod.category || null };
+  // salesAmount: 판매금액. 판매금액 열 없이 올린 예전 데이터는 null 이에요.
+  const salesAmount = typeof prod.salesAmount === "number" ? prod.salesAmount : null;
+  return { name: prod.name, qty, unitRevenue, totalRevenue, category: prod.category || null, salesAmount };
 }
 
 // ───────── 상품 합치기 ─────────
@@ -215,10 +217,11 @@ function groupProducts(products) {
   (products || []).forEach((raw) => {
     const p = normalizeProduct(raw);
     const key = productGroupKey(p.name);
-    if (!map[key]) map[key] = { qty: 0, totalRevenue: 0, category: null, byName: {} };
+    if (!map[key]) map[key] = { qty: 0, totalRevenue: 0, category: null, byName: {}, salesAmount: null };
     const g = map[key];
     g.qty += p.qty;
     g.totalRevenue += p.totalRevenue;
+    if (p.salesAmount != null) g.salesAmount = (g.salesAmount || 0) + p.salesAmount;
     if (p.category && !g.category) g.category = p.category;
     const nk = normalizeNameKey(p.name);
     if (!g.byName[nk]) g.byName[nk] = { name: p.name, totalRevenue: 0, qty: 0 };
@@ -234,6 +237,8 @@ function groupProducts(products) {
       totalRevenue: g.totalRevenue,
       unitRevenue: g.qty ? g.totalRevenue / g.qty : g.totalRevenue,
       category: g.category,
+      salesAmount: g.salesAmount,
+      rate: commissionRate(g.totalRevenue, g.salesAmount),
     };
   });
 }
@@ -244,10 +249,44 @@ function groupProducts(products) {
 // 여기에 없는 플랫폼은 예전처럼 '상품'·'수익/매출/금액'·'수량' 단어가 든 첫 열을 써요.
 // 일부 열만 아는 플랫폼은 아는 열만 적어요. 안 적은 열(name/qty)은 예전처럼 단어로 찾아요.
 const PLATFORM_COLUMNS = {
-  "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", category: "상품군" },
+  // sales: 고객이 결제한 판매금액. 수수료율(정산금 ÷ 판매금액)을 계산할 때만 써요.
+  "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", sales: "판매 금액", category: "상품군" },
   "여기어때": { revenue: "정산금액" }, // '총 실적 인정 금액'이 아니라 '정산금액'이 수익 (하연이 확인)
 };
-const COLUMN_LABELS = { name: "상품명", revenue: "수익", qty: "수량", category: "상품군" };
+const COLUMN_LABELS = { name: "상품명", revenue: "수익", qty: "수량", sales: "판매금액", category: "상품군" };
+
+// ───────── 수수료율 ─────────
+// 수수료율 = 정산금(수익) ÷ 판매금액 × 100. 판매금액이 없거나 0이면 계산하지 않아요(null).
+function commissionRate(settle, sales) {
+  return sales ? (settle / sales) * 100 : null;
+}
+function formatRate(rate) {
+  return rate == null ? "-" : `${rate.toFixed(1)}%`;
+}
+// 묶인 상품 목록(groupProducts 결과)을 분류(투어·호텔·티켓…)별로 모아 판매금액·정산금·수수료율을 계산해요.
+// 판매금액 열 없이 올라간 상품은 빼요. 분류는 상품 유형 배지와 같은 규칙이고, 못 정하면 '기타'예요.
+function rateByCategory(platform, groups) {
+  const map = {};
+  groups.forEach((g) => {
+    if (g.salesAmount == null) return;
+    const category = classifyProductType(platform, g.name, g.category) || "기타";
+    if (!map[category]) map[category] = { category, sales: 0, settle: 0, products: 0 };
+    map[category].sales += g.salesAmount;
+    map[category].settle += g.totalRevenue;
+    map[category].products += 1;
+  });
+  return Object.values(map)
+    .map((r) => ({ ...r, rate: commissionRate(r.settle, r.sales) }))
+    .sort((a, b) => b.sales - a.sales);
+}
+// 판매금액이 있는 상품만 합친 전체 요약. 판매금액이 하나도 없으면 null.
+function rateSummary(groups) {
+  const withSales = groups.filter((g) => g.salesAmount != null);
+  if (!withSales.length) return null;
+  const sales = withSales.reduce((s, g) => s + g.salesAmount, 0);
+  const settle = withSales.reduce((s, g) => s + g.totalRevenue, 0);
+  return { sales, settle, rate: commissionRate(settle, sales), products: withSales.length, missing: groups.length - withSales.length };
+}
 function sameHeader(a, b) {
   return String(a ?? "").replace(/\s+/g, "") === String(b ?? "").replace(/\s+/g, "");
 }
@@ -756,6 +795,59 @@ function OverviewTab({ months, selectedMonth, setSelectedMonth, platformData, bl
   );
 }
 
+// 판매금액 대비 정산금(수수료율) 요약: 위는 지표 카드 3개, 아래는 분류별 표 + 수수료율 크기를 보여주는 얇은 막대.
+// 막대는 한 가지 색(골드)이고, 정확한 숫자는 옆 글자와 마우스 툴팁이 알려줘요.
+function RatePanel({ summary, rows }) {
+  const maxRate = Math.max(0.0001, ...rows.map((r) => Math.max(r.rate ?? 0, 0)));
+  return (
+    <div className="rate-panel">
+      <div className="kpi-row">
+        <div className="kpi">
+          <div className="kpi-label">판매금액</div>
+          <div className="kpi-value">{formatWon(summary.sales)}</div>
+          <div className="kpi-sub">고객이 결제한 금액</div>
+        </div>
+        <div className="kpi">
+          <div className="kpi-label">정산금 (수익)</div>
+          <div className="kpi-value">{formatWon(summary.settle)}</div>
+          <div className="kpi-sub">판매금액이 있는 상품 {summary.products}개 기준</div>
+        </div>
+        <div className="kpi kpi-accent">
+          <div className="kpi-label">수수료율</div>
+          <div className="kpi-value kpi-hero">{formatRate(summary.rate)}</div>
+          <div className="kpi-sub">판매금액 대비 정산금</div>
+        </div>
+      </div>
+      {rows.length > 0 && (
+        <div className="table-scroll">
+          <table className="table rate-table">
+            <thead><tr><th>분류</th><th>상품</th><th>판매금액</th><th>정산금</th><th className="rate-col">수수료율</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.category}>
+                  <td><span className="type-badge">{r.category}</span></td>
+                  <td>{r.products}개</td>
+                  <td className="num-cell">{formatWon(r.sales)}</td>
+                  <td className="num-cell">{formatWon(r.settle)}</td>
+                  <td className="rate-col">
+                    <div className="rate-bar" title={`${r.category}: 판매금액 ${formatWon(r.sales)} 중 정산금 ${formatWon(r.settle)} (${formatRate(r.rate)})`}>
+                      <span className="rate-bar-track">
+                        <span className="rate-bar-fill" style={{ width: `${r.rate != null && r.rate > 0 ? Math.max(3, (r.rate / maxRate) * 100) : 0}%` }} />
+                      </span>
+                      <span className="rate-bar-value">{formatRate(r.rate)}</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {summary.missing > 0 && <div className="hint">판매금액이 없는 상품 {summary.missing}개는 수수료율 계산에서 빠졌어요.</div>}
+    </div>
+  );
+}
+
 function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
   const [platform, setPlatform] = useState(PLATFORMS[0]);
   const [month, setMonth] = useState(currentMonth());
@@ -786,6 +878,8 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const revKey = profile.revenue ? exactHeader(rows[0], profile.revenue) : findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
       const qtyKey = profile.qty ? exactHeader(rows[0], profile.qty) : findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
       const categoryKey = profile.category ? exactHeader(rows[0], profile.category) : null;
+      // 판매금액은 수수료율용이라 없어도 업로드는 돼요. (지정한 플랫폼만 읽어요)
+      const salesKey = profile.sales ? exactHeader(rows[0], profile.sales) : null;
       const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k, h]) => h && !k).map(([, h]) => `'${h}'`);
       if (missing.length) throw new Error(`${platform} 엑셀에서 ${missing.join(", ")} 열을 찾지 못했어요. 엑셀 첫 줄의 열 이름을 확인해주세요.`);
       if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
@@ -802,6 +896,7 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
         const revenue = parseNumber(r[revKey]);
         const qty = qtyKey ? parseNumber(r[qtyKey]) || 1 : 1;
         if (!grouped[key]) grouped[key] = { name, qty: 0, totalRevenue: 0 };
+        if (salesKey) grouped[key].salesAmount = (grouped[key].salesAmount || 0) + parseNumber(r[salesKey]);
         grouped[key].qty += qty;
         grouped[key].totalRevenue += revenue;
         const category = categoryKey ? String(r[categoryKey]).trim() : "";
@@ -815,10 +910,11 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const total = products.reduce((s, p) => s + p.totalRevenue, 0);
 
       // 나중에 "이 숫자 어느 열에서 왔지?"를 확인할 수 있게, 읽은 열 이름을 같이 저장해요.
-      const source = { name: nameKey, revenue: revKey, qty: qtyKey || null, category: categoryKey || null, rows: rows.length, uploadedAt: new Date().toISOString() };
+      const source = { name: nameKey, revenue: revKey, qty: qtyKey || null, sales: salesKey || null, category: categoryKey || null, rows: rows.length, uploadedAt: new Date().toISOString() };
       const next = { ...platformData, [platform]: { ...(platformData[platform] || {}), [month]: { products, total, source } } };
       await updatePlatformData(next);
-      showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료 (수익: '${revKey}' 열)`);
+      const salesNote = profile.sales && !salesKey ? ` · '${profile.sales}' 열이 없어서 수수료율은 빠졌어요` : "";
+      showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료 (수익: '${revKey}' 열)${salesNote}`);
     } catch (err) {
       showToast(err.message || "엑셀 파일을 읽는 데 실패했어요", "err");
     } finally {
@@ -846,10 +942,20 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
     if (!current) return [];
     // 문구만 다른 같은 상품(예: [특가]·★ 문구 차이)은 핵심 이름 기준으로 한 줄로 합쳐서 보여줘요.
     const arr = groupProducts(current.products);
-    arr.sort((a, b) => (sortDir === "desc" ? b[sortField] - a[sortField] : a[sortField] - b[sortField]));
+    // 값이 없는 상품(예: 수수료율 '-')은 정렬 방향과 상관없이 항상 맨 뒤로 보내요.
+    arr.sort((a, b) => {
+      const va = a[sortField], vb = b[sortField];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      return sortDir === "desc" ? vb - va : va - vb;
+    });
     return arr;
   }, [current, sortField, sortDir]);
   const mergedCount = sortedProducts.filter((p) => p.variants.length > 1).length;
+  // 수수료율: 판매금액 열과 함께 올린 달만 계산돼요.
+  const summary = useMemo(() => rateSummary(sortedProducts), [sortedProducts]);
+  const categoryRates = useMemo(() => rateByCategory(platform, sortedProducts), [platform, sortedProducts]);
   const profile = PLATFORM_COLUMNS[platform];
   const profileFields = profile ? Object.entries(profile) : []; // [["revenue", "정산금액"], ...]
   // 수익 열을 지정한 플랫폼인데, 이 달이 그 열이 아닌 다른 열로 계산돼 있으면 다시 올려달라고 안내해요.
@@ -905,6 +1011,15 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 </div>
               </div>
             )}
+            {summary ? (
+              <RatePanel summary={summary} rows={categoryRates} />
+            ) : (
+              <div className="hint rate-missing">
+                {profile?.sales
+                  ? <>이 달은 판매금액 없이 올라가 있어서 수수료율을 계산할 수 없어요. 엑셀을 다시 올리면 분류별 수수료율이 보여요.</>
+                  : <>{platform}은 판매금액 열이 아직 지정되지 않아서 수수료율을 계산할 수 없어요.</>}
+              </div>
+            )}
             <div className="row-between" style={{ marginBottom: 10 }}>
               <div className="rev-total">{platform} · {formatMonthLabel(month)} 총매출 <SplitNumber value={formatWon(current.total)} size="sm" /></div>
               <select
@@ -916,6 +1031,8 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 <option value="totalRevenue-asc">총 수익금 낮은순</option>
                 <option value="qty-desc">판매수량 많은순</option>
                 <option value="qty-asc">판매수량 적은순</option>
+                {summary && <option value="rate-desc">수수료율 높은순</option>}
+                {summary && <option value="rate-asc">수수료율 낮은순</option>}
               </select>
             </div>
             {(current.source || mergedCount > 0) && (
@@ -928,15 +1045,24 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
               </div>
             )}
             <table className="table">
-              <thead><tr><th>순위</th><th>상품명</th><th>판매수량</th><th>개별 수익금</th><th>총 수익금</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>순위</th><th>상품명</th><th>판매수량</th>
+                  {summary && <th>판매금액</th>}
+                  <th>개별 수익금</th><th>총 수익금</th>
+                  {summary && <th>수수료율</th>}
+                </tr>
+              </thead>
               <tbody>
                 {visibleProducts.map((p, i) => (
                   <tr key={`${p.name}-${i}`} className={i === 0 ? "top-row" : ""}>
                     <td>{i + 1}</td>
                     <td><ProductName name={p.name} type={classifyProductType(platform, p.name, p.category)} variants={p.variants} /></td>
                     <td>{p.qty}</td>
+                    {summary && <td className="num-cell">{p.salesAmount != null ? formatWon(p.salesAmount) : "-"}</td>}
                     <td>{formatWon(p.unitRevenue)}</td>
                     <td>{formatWon(p.totalRevenue)}</td>
+                    {summary && <td className="num-cell rate-cell">{formatRate(p.rate)}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -1586,7 +1712,150 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
             ) : <EmptyState icon={Trophy} title="종합 분석할 데이터가 없어요" desc="매출과 게시글 데이터를 함께 업로드하면 종합 순위가 만들어져요." />}
           </div>
 
+          <RateComparePanel platformData={platformData} scope={scope} />
+
           <RegionTagPanel items={taggableItems} regionTags={regionTags} onSave={updateRegionTag} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// 플랫폼별 수수료율을 분류별로 나란히 비교해요. 같은 분류에서 수수료율이 가장 높은 플랫폼에 '유리' 표시를 붙여요.
+// (색만으로 구분하지 않게 글자 표시를 같이 써요) 아래에는 이름이 같은 상품끼리의 비교도 보여줘요.
+function buildRateCompare(platformData, scope) {
+  const perPlatform = {};
+  const byProduct = {}; // 핵심 이름 → { 플랫폼: 묶인 상품 }
+  PLATFORMS.forEach((p) => {
+    const list = [];
+    Object.entries(platformData[p] || {}).forEach(([m, data]) => {
+      if (scope !== "all" && m !== scope) return;
+      list.push(...(data.products || []));
+    });
+    const groups = groupProducts(list);
+    const summary = rateSummary(groups);
+    if (!summary) return; // 판매금액이 하나도 없는 플랫폼은 비교에서 빠져요
+    perPlatform[p] = { summary, rows: rateByCategory(p, groups) };
+    groups.forEach((g) => {
+      if (g.salesAmount == null) return;
+      const k = productGroupKey(g.name);
+      if (!byProduct[k]) byProduct[k] = {};
+      byProduct[k][p] = g;
+    });
+  });
+  const platforms = PLATFORMS.filter((p) => perPlatform[p]);
+  const bestOf = (cells) => {
+    const rated = platforms.filter((p) => cells[p]?.rate != null);
+    if (rated.length < 2) return null; // 비교할 상대가 없으면 '유리' 표시 안 해요
+    return rated.reduce((a, b) => (cells[b].rate > cells[a].rate ? b : a));
+  };
+  const categories = [...new Set(platforms.flatMap((p) => perPlatform[p].rows.map((r) => r.category)))];
+  const rows = categories
+    .map((category) => {
+      const cells = Object.fromEntries(platforms.map((p) => [p, perPlatform[p].rows.find((r) => r.category === category) || null]));
+      const sales = platforms.reduce((s, p) => s + (cells[p]?.sales || 0), 0);
+      return { category, cells, best: bestOf(cells), sales };
+    })
+    .sort((a, b) => b.sales - a.sales);
+  const totalCells = Object.fromEntries(platforms.map((p) => [p, perPlatform[p].summary]));
+  const sameProducts = Object.values(byProduct)
+    .filter((cells) => Object.keys(cells).length > 1)
+    .map((cells) => {
+      const first = Object.values(cells).sort((a, b) => b.salesAmount - a.salesAmount)[0];
+      return { name: first.name, cells, best: bestOf(cells), sales: Object.values(cells).reduce((s, g) => s + g.salesAmount, 0) };
+    })
+    .sort((a, b) => b.sales - a.sales);
+  return { platforms, rows, total: { cells: totalCells }, sameProducts };
+}
+
+function RateCell({ cell, isBest }) {
+  if (!cell || cell.rate == null) return <td className="rate-compare-cell empty">-</td>;
+  const settle = cell.settle;
+  return (
+    <td className={`rate-compare-cell ${isBest ? "best" : ""}`} title={`판매금액 ${formatWon(cell.sales)} · 정산금 ${formatWon(settle)}`}>
+      <div className="rate-compare-value">
+        {formatRate(cell.rate)}
+        {isBest && <span className="best-chip">유리</span>}
+      </div>
+      <div className="rate-compare-sub">판매 {formatWon(cell.sales)}</div>
+    </td>
+  );
+}
+
+function RateComparePanel({ platformData, scope }) {
+  const data = useMemo(() => buildRateCompare(platformData, scope), [platformData, scope]);
+  const { platforms, rows, total, sameProducts } = data;
+  const header = (
+    <tr>
+      <th>분류</th>
+      {platforms.map((p) => (
+        <th key={p}><span className="platform-swatch" style={{ background: PLATFORM_COLOR[p] }} />{p}</th>
+      ))}
+    </tr>
+  );
+  return (
+    <div className="panel">
+      <div className="panel-title">🧾 플랫폼별 수수료율 비교 — 분류별</div>
+      <div className="hint" style={{ marginTop: 0, marginBottom: 12 }}>
+        수수료율은 판매금액 대비 정산금 비율이에요. 같은 분류에서 수수료율이 가장 높은 플랫폼에 <b>유리</b> 표시가 붙어요. 판매금액 열과 함께 올린 달만 계산돼요.
+      </div>
+      {platforms.length === 0 ? (
+        <EmptyState icon={BarChart3} title="수수료율을 계산할 데이터가 없어요" desc="판매금액 열이 있는 정산 엑셀을 플랫폼 매출 탭에서 올려주세요." />
+      ) : (
+        <>
+          {platforms.length === 1 && (
+            <div className="hint" style={{ marginTop: 0, marginBottom: 10 }}>
+              지금은 <b>{platforms[0]}</b>만 판매금액이 있어서 나란히 비교할 플랫폼이 없어요. 다른 플랫폼도 판매금액 열이 지정되면 옆에 같이 나와요.
+            </div>
+          )}
+          <div className="table-scroll">
+            <table className="table rate-compare-table">
+              <thead>{header}</thead>
+              <tbody>
+                {/* 전체 줄은 상품 구성(이심 비중 등)에 따라 달라져서 '유리' 표시를 안 붙여요. 비교는 분류별 줄로 해요. */}
+                <tr className="rate-compare-total">
+                  <td>전체</td>
+                  {platforms.map((p) => <RateCell key={p} cell={total.cells[p]} isBest={false} />)}
+                </tr>
+                {rows.map((r) => (
+                  <tr key={r.category}>
+                    <td><span className="type-badge">{r.category}</span></td>
+                    {platforms.map((p) => <RateCell key={p} cell={r.cells[p]} isBest={r.best === p} />)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {platforms.length > 1 && (
+            <>
+              <div className="panel-subtitle">같은 상품 비교</div>
+              {sameProducts.length ? (
+                <div className="table-scroll">
+                  <table className="table rate-compare-table">
+                    <thead>
+                      <tr>
+                        <th>상품명</th>
+                        {platforms.map((p) => <th key={p}><span className="platform-swatch" style={{ background: PLATFORM_COLOR[p] }} />{p}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sameProducts.map((s) => (
+                        <tr key={s.name}>
+                          <td className="tag-name">{s.name}</td>
+                          {platforms.map((p) => <RateCell key={p} cell={s.cells[p] ? { rate: s.cells[p].rate, sales: s.cells[p].salesAmount, settle: s.cells[p].totalRevenue } : null} isBest={s.best === p} />)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="hint" style={{ marginTop: 0 }}>
+                  두 플랫폼에서 이름이 같은 상품은 아직 없어요. 플랫폼마다 상품명 표기가 달라서, 같은 상품인데 여기 안 잡힐 수 있어요. 그럴 땐 위의 분류별 비교를 참고해주세요.
+                </div>
+              )}
+            </>
+          )}
         </>
       )}
     </div>
@@ -1916,6 +2185,39 @@ function Style() {
       .warn-box svg { color: #E8A33D; flex-shrink: 0; margin-top: 2px; }
       .warn-box b { color: #E8A33D; }
       .source-hint { margin-top: 0; margin-bottom: 10px; }
+
+      /* 수수료율: 지표 카드 + 분류별 표 */
+      .rate-panel { margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid #2A3F5C; }
+      .kpi-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+      @media (max-width: 640px) { .kpi-row { grid-template-columns: 1fr; } }
+      .kpi { background: #16273F; border: 1px solid #2A3F5C; border-radius: 8px; padding: 12px 14px; min-width: 0; }
+      .kpi-label { font-size: 11px; color: #93A2BC; margin-bottom: 6px; }
+      .kpi-value { font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 600; color: #F4F1E8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .kpi-sub { font-size: 11px; color: #56698c; margin-top: 4px; }
+      .kpi-accent { border-color: rgba(232,163,61,0.55); background: linear-gradient(180deg, rgba(232,163,61,0.10), rgba(232,163,61,0.02)); }
+      .kpi-accent .kpi-label { color: #E8A33D; font-weight: 600; }
+      .kpi-hero { font-size: 26px; color: #E8A33D; letter-spacing: 0.5px; }
+      .rate-table td, .rate-table th { white-space: nowrap; }
+      .rate-col { width: 34%; min-width: 180px; }
+      .rate-bar { display: flex; align-items: center; gap: 10px; cursor: default; }
+      .rate-bar-track { flex: 1; height: 6px; border-radius: 3px; background: #22344d; overflow: hidden; }
+      .rate-bar-fill { display: block; height: 100%; border-radius: 3px; background: #E8A33D; }
+      .rate-bar-value { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #F4F1E8; min-width: 46px; text-align: right; }
+      .rate-cell { color: #F4F1E8; font-weight: 600; }
+      .rate-missing { margin-top: 0; margin-bottom: 14px; }
+
+      /* 플랫폼별 수수료율 비교 */
+      .panel-subtitle { font-size: 12px; font-weight: 600; color: #93A2BC; margin: 18px 0 8px; }
+      .platform-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
+      .rate-compare-table th, .rate-compare-table td { white-space: nowrap; }
+      .rate-compare-cell { min-width: 130px; }
+      .rate-compare-cell.empty { color: #56698c; }
+      .rate-compare-value { display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; color: #F4F1E8; }
+      .rate-compare-sub { font-size: 11px; color: #56698c; margin-top: 2px; }
+      .rate-compare-cell.best { background: rgba(232,163,61,0.08); box-shadow: inset 2px 0 0 #E8A33D; }
+      .best-chip { font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 6px; border-radius: 4px; background: #E8A33D; color: #0F1B2D; }
+      .rate-compare-total td { border-bottom: 1px solid #2A3F5C; }
+      .rate-compare-total td:first-child { font-weight: 600; color: #93A2BC; }
 
       .tag-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
       .seg { display: flex; gap: 6px; }

@@ -28,8 +28,9 @@ travelog-dashboard (1)/         ← 실제 앱 폴더 (폴더 이름에 공백�
 - 스택: React 18 + Vite 5, recharts(차트), xlsx/papaparse(엑셀·CSV 파싱), lucide-react(아이콘), Firebase(Firestore + 익명 Auth)
 - 탭: 개요(OverviewTab) / 플랫폼 매출(RevenueTab) / 블로그 운영(PostsTab) / 인사이트(InsightTab) / 컨설팅(ConsultingTab)
 - 데이터: Firestore `dashboardData` 컬렉션에 문서 하나당 키 하나 (`safeGet`/`safeSet`)
-  - `platform-data`: {플랫폼: {YYYY-MM: {total, products:[{name, qty, unitRevenue, totalRevenue, category?}], source?}}}
-    - `source`: 업로드 때 읽은 열 이름 {name, revenue, qty, category, rows, uploadedAt}. 없으면 열 이름 지정 전에 올린 예전 데이터야.
+  - `platform-data`: {플랫폼: {YYYY-MM: {total, products:[{name, qty, unitRevenue, totalRevenue, category?, salesAmount?}], source?}}}
+    - `source`: 업로드 때 읽은 열 이름 {name, revenue, qty, sales, category, rows, uploadedAt}. 없으면 열 이름 지정 전에 올린 예전 데이터야.
+    - `salesAmount`: 판매금액 합계 (판매금액 열을 지정한 플랫폼만). **수수료율 = 정산금(totalRevenue) ÷ 판매금액 × 100** (`commissionRate`)
     - `category`: 엑셀의 '상품군' (마이리얼트립만, 있을 때만 저장. Firestore는 undefined를 못 저장해)
   - `region-tags`: {태그키: {region, destination}}. 상품 키는 `product::플랫폼::핵심이름`(productGroupKey), 예전 키 `product::플랫폼::원래이름`도 계속 읽어.
 - **마이리얼트립 정산 엑셀 열**: 예약일 · 마케팅 링크 ID · 예약 ID · 주문 구분 · 상품군 · 상품명 · 정산 기준일 · 판매 수량 · 판매 금액 · 정산 기준 금액 · 수익 금액 · 제세공과금 · 정산 예상 금액
@@ -39,6 +40,10 @@ travelog-dashboard (1)/         ← 실제 앱 폴더 (폴더 이름에 공백�
   - 하연이가 다시 올려서 총매출이 엑셀과 맞는 걸 확인했어 (2026-11-06).
 - **여기어때 정산 엑셀**: **수익 = `정산금액`** (하연이 확인). 왼쪽에 있는 `총 실적 인정 금액`을 읽으면 안 돼.
   - 상품명·수량 열 이름은 아직 몰라서 단어로 찾아. 정확한 열 이름을 받으면 `PLATFORM_COLUMNS`의 여기어때에 `name`, `qty`를 추가해.
+  - ⬜ **판매금액 열 미지정** → 여기어때는 수수료율이 안 나와. 하연이한테 열 이름을 받아서 `sales`에 넣어. (`총 실적 인정 금액`이 판매금액인지는 확인 안 됨, 추측해서 넣지 마)
+- **수수료율 화면** (PR: hayeon/commission-rate)
+  - 매출 탭: 총매출 위에 판매금액·정산금·수수료율 카드 + 분류별(상품 유형 배지와 같은 분류) 표. 상품 표에 판매금액·수수료율 열과 정렬.
+  - 인사이트 탭 '플랫폼별 수수료율 비교': 분류 × 플랫폼 표, 분류별로 가장 높은 곳에 '유리'. '전체' 줄엔 '유리'를 안 붙여 (상품 구성에 따라 달라져서). 아래 '같은 상품 비교'는 핵심 이름이 똑같은 상품만 잡혀.
 - **클룩**: 열 이름 미확인. 예전 방식(단어가 든 첫 열) 그대로야.
 - 매출 탭 '다시 올려주세요' 안내: 수익 열을 지정한 플랫폼에서, 저장된 `source.revenue`가 지정한 열과 다르면(또는 기록이 없으면) 떠.
   - `posts-data`, `post-records`, `blog-names`, `consulting-history`
