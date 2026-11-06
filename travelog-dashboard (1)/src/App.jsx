@@ -8,10 +8,12 @@ import Papa from "papaparse";
 import {
   Plane, TrendingUp, Upload, Sparkles, FileSpreadsheet, RefreshCw,
   AlertCircle, CheckCircle2, Link2, Loader2, Trash2, Compass, MapPin,
-  Trophy, BarChart3, LogOut, Dog,
+  Trophy, BarChart3, LogOut,
 } from "lucide-react";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { signInAnonymously } from "firebase/auth";
+import {
+  GoogleAuthProvider, signInWithPopup, signInWithRedirect, onAuthStateChanged, signOut,
+} from "firebase/auth";
 import { db, auth } from "./firebase.js";
 
 const PLATFORMS = ["여기어때", "마이리얼트립", "클룩"];
@@ -230,50 +232,85 @@ function EmptyState({ icon: Icon, title, desc }) {
   );
 }
 
-const DOG_BREEDS = [
-  { id: "spotted", label: "바둑이" },
-  { id: "welsh", label: "웰시" },
-  { id: "retriever", label: "리트리버" },
-  { id: "pomeranian", label: "포메라니안" },
-];
+// Firebase 로그인 오류 코드를 쉬운 안내 문구로 바꿔요.
+const AUTH_ERROR_TEXT = {
+  "auth/unauthorized-domain": "이 주소는 아직 로그인 허용 도메인에 등록되지 않았어요. (Firebase > Authentication > 설정 > 승인된 도메인)",
+  "auth/operation-not-allowed": "Google 로그인이 아직 켜져 있지 않아요. (Firebase > Authentication > 로그인 방법)",
+  "auth/network-request-failed": "네트워크 연결을 확인하고 다시 시도해주세요.",
+};
 
-function PatternGate({ onUnlock }) {
-  const [count, setCount] = useState(0);
+function GoogleMark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
+      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
+      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
+      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
+    </svg>
+  );
+}
 
-  function handleClick(id) {
-    if (id === "spotted") {
-      const next = count + 1;
-      setCount(next);
-      if (next >= 3) onUnlock();
-    } else {
-      setCount(0);
+function LoginScreen() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleLogin() {
+    setBusy(true); setError("");
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (e) {
+      if (e.code === "auth/popup-blocked") {
+        await signInWithRedirect(auth, provider); // 팝업이 막힌 브라우저는 페이지 이동 방식으로
+        return;
+      }
+      if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
+        console.error("[firebase auth] Google 로그인 실패", e);
+        setError(AUTH_ERROR_TEXT[e.code] || "로그인에 실패했어요. 잠시 후 다시 시도해주세요.");
+      }
     }
+    setBusy(false);
   }
 
   return (
     <div className="app-shell login-shell">
       <Style />
-      <div className="login-card gate-card">
+      <div className="login-card">
+        <div className="brand-mark"><Plane size={18} /></div>
         <div className="login-title">TRAVELOG DASHBOARD</div>
-        <div className="login-sub">마음에 드는 강아지를 골라보세요 🐾</div>
-        <div className="dog-row">
-          {DOG_BREEDS.map((b) => (
-            <button key={b.id} className="dog-btn" onClick={() => handleClick(b.id)} type="button">
-              <span className={`dog-icon dog-${b.id}`}><Dog size={26} /></span>
-              <span className="dog-label">{b.label}</span>
-            </button>
-          ))}
+        <div className="login-sub">등록된 Google 계정으로 로그인해주세요.</div>
+        <button className="google-btn" onClick={handleLogin} disabled={busy} type="button">
+          {busy ? <Loader2 size={16} className="spin" /> : <GoogleMark />}
+          <span>Google 계정으로 로그인</span>
+        </button>
+        {error && <div className="error-box login-error"><AlertCircle size={14} /> {error}</div>}
+      </div>
+    </div>
+  );
+}
+
+function DeniedScreen({ email, onSignOut }) {
+  return (
+    <div className="app-shell login-shell">
+      <Style />
+      <div className="login-card">
+        <div className="brand-mark denied"><AlertCircle size={18} /></div>
+        <div className="login-title">접근 권한이 없는 계정이에요</div>
+        <div className="login-sub">
+          <b>{email}</b><br />이 계정은 대시보드에 등록되어 있지 않아요.<br />다른 계정으로 로그인하거나 관리자에게 등록을 요청해주세요.
         </div>
-        <div className="gate-dots">
-          {[0, 1, 2].map((i) => <span key={i} className={`gate-dot ${i < count ? "filled" : ""}`} />)}
-        </div>
+        <button className="ghost-btn" onClick={onSignOut} type="button"><LogOut size={13} /> 다른 계정으로 로그인</button>
       </div>
     </div>
   );
 }
 
 export default function App() {
-  const [unlocked, setUnlocked] = useState(false);
+  // user: undefined = 로그인 상태 확인 중, null = 로그아웃, 객체 = 로그인됨
+  const [user, setUser] = useState(undefined);
+  // access: checking = 허용 목록 확인 중, allowed = 통과, denied = 등록 안 된 계정
+  const [access, setAccess] = useState("checking");
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [platformData, setPlatformData] = useState({});
@@ -284,10 +321,35 @@ export default function App() {
   const [regionTags, setRegionTags] = useState({});
   const [toast, setToast] = useState(null);
 
+  // Firebase가 로그인 상태를 기억해서, 새로고침해도 다시 로그인할 필요가 없어요.
   useEffect(() => {
-    if (!unlocked) return;
+    return onAuthStateChanged(auth, async (u) => {
+      // 예전 강아지 잠금 시절의 익명 로그인이 남아 있으면 정리해요.
+      if (u && u.isAnonymous) { await signOut(auth); return; }
+      setUser(u);
+      if (!u) { setAccess("checking"); return; }
+      setAccess("checking");
+      // allowedUsers/{이메일} 문서가 있는지 확인해요. (실제 차단은 Firestore 규칙이 해요)
+      try {
+        const snap = await getDoc(doc(db, "allowedUsers", u.email));
+        setAccess(snap.exists() ? "allowed" : "denied");
+      } catch (e) {
+        console.error("[firestore] 허용 목록 확인 실패", e);
+        setAccess("denied");
+      }
+    });
+  }, []);
+
+  async function handleSignOut() {
+    await signOut(auth);
+    // 다른 계정으로 다시 로그인할 때 이전 데이터가 잠깐 보이지 않게 비워요.
+    setLoaded(false);
+    setPlatformData({}); setPostsData({}); setPostRecords({}); setConsultingHistory([]); setRegionTags({});
+  }
+
+  useEffect(() => {
+    if (access !== "allowed") return;
     (async () => {
-      try { await signInAnonymously(auth); } catch (e) { console.error("[firebase auth] 익명 로그인 실패", e); }
       const [pd, bd, pr, bn, ch, rt] = await Promise.all([
         safeGet("platform-data"), safeGet("posts-data"), safeGet("post-records"),
         safeGet("blog-names"), safeGet("consulting-history"), safeGet("region-tags"),
@@ -300,7 +362,7 @@ export default function App() {
       if (ch) setConsultingHistory(ch);
       setLoaded(true);
     })();
-  }, [unlocked]);
+  }, [access]);
 
   function showToast(msg, kind = "ok") {
     setToast({ msg, kind });
@@ -354,11 +416,10 @@ export default function App() {
 
   const pieData = PLATFORMS.map((p) => ({ name: p, value: platformData[p]?.[selectedMonth]?.total || 0 }));
 
-  if (!unlocked) {
-    return <PatternGate onUnlock={() => setUnlocked(true)} />;
-  }
+  if (user === null) return <LoginScreen />;
+  if (user && access === "denied") return <DeniedScreen email={user.email} onSignOut={handleSignOut} />;
 
-  if (!loaded) {
+  if (!user || access === "checking" || !loaded) {
     return (
       <div className="app-shell loading-shell">
         <Loader2 className="spin" size={22} /> <span style={{ marginLeft: 10 }}>불러오는 중...</span>
@@ -377,7 +438,7 @@ export default function App() {
             <div className="brand-title">TRAVELOG DASHBOARD</div>
             <div className="brand-sub">블로그 운영 · 어필리에이트 매출 관제탑</div>
           </div>
-          <button className="logout-btn" onClick={() => setUnlocked(false)} title="잠그기"><LogOut size={14} /></button>
+          <button className="logout-btn" onClick={handleSignOut} title={`로그아웃 (${user.email})`}><LogOut size={14} /></button>
         </div>
         <div className="boarding-strip">
           <span>DEPARTURE</span><span className="dot">•</span>
@@ -1475,31 +1536,20 @@ function Style() {
         width: 320px; display: flex; flex-direction: column; gap: 12px; align-items: center;
       }
       .login-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 0.5px; }
-      .login-sub { font-size: 12px; color: #93A2BC; text-align: center; margin-bottom: 8px; }
+      .login-sub { font-size: 12px; color: #93A2BC; text-align: center; line-height: 1.6; margin-bottom: 8px; }
+      .login-sub b { color: #F4F1E8; font-weight: 600; }
       .login-card .text-input { width: 100%; min-width: 0; }
-      .dog-row { display: flex; gap: 16px; margin-top: 4px; }
-      .dog-btn {
-        display: flex; flex-direction: column; align-items: center; gap: 6px;
-        background: none; border: none; cursor: pointer; padding: 0;
+      .login-card .brand-mark.denied { background: rgba(239,91,91,0.15); color: #EF5B5B; }
+      .google-btn {
+        width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px;
+        background: #F4F1E8; color: #0F1B2D; border: none; border-radius: 6px;
+        padding: 11px 16px; font-size: 13px; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer;
+        transition: background .15s;
       }
-      .dog-icon {
-        width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-        transition: transform .12s ease;
-      }
-      .dog-btn:active .dog-icon { transform: scale(0.9); }
-      .dog-label { font-size: 11px; color: #93A2BC; }
-      .dog-spotted {
-        background: radial-gradient(circle at 32% 34%, #14202f 11%, transparent 12%),
-          radial-gradient(circle at 68% 60%, #14202f 14%, transparent 15%),
-          radial-gradient(circle at 76% 26%, #14202f 8%, transparent 9%), #F4F1E8;
-        color: #14202f;
-      }
-      .dog-welsh { background: linear-gradient(180deg, #E8A33D 55%, #F4F1E8 55%); color: #0F1B2D; }
-      .dog-retriever { background: #c98a3e; color: #2b1a08; }
-      .dog-pomeranian { background: #f0d9a8; color: #7a5a28; }
-      .gate-dots { display: flex; gap: 8px; margin-top: 10px; }
-      .gate-dot { width: 8px; height: 8px; border-radius: 50%; background: #2A3F5C; transition: background .15s; }
-      .gate-dot.filled { background: #E8A33D; }
+      .google-btn:hover { background: #fff; }
+      .google-btn:disabled { opacity: 0.7; cursor: wait; }
+      .login-error { align-items: flex-start; line-height: 1.5; text-align: left; }
+      @media (max-width: 380px) { .login-card { width: calc(100vw - 32px); padding: 28px 20px; } }
       .logout-btn {
         margin-left: auto; background: transparent; border: 1px solid #2A3F5C; color: #93A2BC;
         width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; cursor: pointer;
