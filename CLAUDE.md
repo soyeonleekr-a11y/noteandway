@@ -15,6 +15,8 @@
 ## 구조
 ```
 CLAUDE.md                       ← 이 파일
+.claude/settings.json           ← Claude Code 설정 (훅 등록)
+.claude/hooks/guard.mjs         ← 위험한 git/gh 명령과 비밀값 커밋을 막는 훅 (아래 '금지사항')
 travelog-dashboard (1)/         ← 실제 앱 폴더 (폴더 이름에 공백과 괄호가 있으니 경로를 따옴표로 감싸줘)
   package.json                  ← "type": "module" (ES 모듈)
   netlify.toml                  ← build: npm run build, publish: dist, functions: netlify/functions
@@ -45,23 +47,37 @@ npm run build    # 배포 전에 빌드 오류가 없는지 꼭 확인
 - Firestore에 이미 저장된 데이터 구조를 바꿀 때는, 예전 형태도 읽을 수 있게 변환 코드를 넣어줘 (`normalizeProduct`처럼).
 - 실제 매출 데이터를 지우거나 덮어쓰는 코드는 실행하기 전에 하연이한테 먼저 물어봐.
 
+## 금지사항
+아래 ❌ 항목은 `.claude/hooks/guard.mjs` 훅이 Bash 명령 실행 직전에 검사해서 **자동으로 막아** (표시: 🔒). 훅이 막으면 이유를 읽고 우회하지 말고 하연이한테 물어봐.
+
+- ❌ 🔒 main/master에 직접 푸시 금지. main 브랜치 위에서 바로 커밋하는 것도 금지야.
+- ❌ 🔒 force 푸시(`-f`, `--force`), `git push --all` 금지. (`--force-with-lease`는 작업 브랜치에서만 가능)
+- ❌ 🔒 PR 머지(`gh pr merge`) 금지. 머지는 하연이가 확인하고 직접 해.
+- ❌ 🔒 `.env`, `CLAUDE.local.md`, 정산 엑셀/CSV, 인증서·비밀키 커밋 금지. `git add -f`로 .gitignore를 우회하는 것도 금지야.
+- ❌ 🔒 API 키(`sk-ant-...` 등), 매출 금액(100만 원 이상), 개인 이메일을 코드·문서·커밋 메시지에 넣지 마. 저장소가 공개야. 필요한 건 `CLAUDE.local.md`에 적어.
+- ❌ Firestore 실제 데이터(`dashboardData`, `allowedUsers`)를 삭제하거나 덮어쓰지 마. 코드든 일회성 스크립트든 하연이가 OK 하기 전에는 실행하지 않아.
+- ❌ `firestore.rules`를 느슨하게 바꾸지 마. (`if true`, 로그인만 확인하는 `request.auth != null` 등)
+- ❌ `ANTHROPIC_API_KEY`를 프론트(`src/`)에서 쓰거나 코드에 적지 마. Netlify 함수에서만 환경변수로 읽어.
+
+훅의 한계: Claude Code 안에서 실행하는 명령만 검사해. 터미널에서 직접 입력하는 git 명령은 막지 못하니까 하연이도 같은 규칙을 지켜줘.
+
 ## 공개 저장소 주의
 - 2026-11-06부터 **저장소가 공개(public)야.** (Netlify 무료 플랜에서 하연이 커밋도 빌드되게 하려고 바꿈)
 - 매출 숫자, 이메일 같은 개인 정보는 커밋하지 말고 `CLAUDE.local.md`(커밋 안 됨)에 적어.
 - API 키는 Netlify 환경변수에만 둬. 코드나 커밋에 넣지 마.
 
-## 배포 상태 (2026-11-06 기준, 확인 필요)
-- 컨설팅 502 수정(PR: hayeon/fix-consult)은 머지됐지만 **사이트에 반영되지 않았어.** 배포 파일 이름이 `assets/index-Dce6VQrB.js`로 그대로야.
-- 동생이 Netlify와 GitHub를 연결하고 저장소를 공개로 바꿨어. 다음 머지 때 자동 배포되는지 확인해줘.
-  → 안 되면 Netlify > Site configuration > Build & deploy에서 **Base directory가 `travelog-dashboard (1)`인지** 확인해.
+## 배포 상태 (2026-11-06 기준)
+- main에 머지하면 Netlify가 **자동으로 배포돼.** (동생이 GitHub 연결 + 저장소 공개로 해결. 배포 파일이 `index-Dce6VQrB.js` → `index-Kte3X-8h.js`로 바뀐 걸 확인했어.)
+- 안 바뀌면 Netlify > Site configuration > Build & deploy에서 **Base directory가 `travelog-dashboard (1)`인지** 확인해.
+- 컨설팅 버튼이 실제로 동작하는지는 아직 확인 못 했어. (Netlify 환경변수 `ANTHROPIC_API_KEY` 포함)
 - Netlify 권한을 받으면 `npx netlify login` → `npx netlify link`로 연결해서 배포 로그를 직접 확인해줘.
 
 ## 할 일 (우선순위 순)
-1. **배포 연결 해결** (위 내용) → 컨설팅 버튼이 실제로 동작하는지 확인. Netlify 환경변수에 `ANTHROPIC_API_KEY`가 있는지도 확인해.
-2. **보안 (중요)**: 지금 `firestore.rules`는 `request.auth != null`만 검사하는데 로그인이 익명 자동 로그인이야. 그래서 **사이트 주소를 아는 누구나 데이터를 읽고 쓰고 지울 수 있어.**
-   - Firebase Auth에서 Google 로그인을 켜고, 앱의 PatternGate를 Google 로그인으로 교체
-   - 규칙을 허용 이메일로 제한. 이메일은 규칙 파일에 적지 말고(공개 저장소라서) Firestore `allowedUsers/{이메일}` 문서로 등록 + `email_verified` 확인
-   - 규칙은 Firebase 콘솔에 직접 게시해야 해. 하연이한테 단계별로 안내해줘.
+1. ~~배포 연결 해결~~ **완료** (자동 배포 확인). 남은 것: 컨설팅 버튼이 실제로 동작하는지, Netlify 환경변수에 `ANTHROPIC_API_KEY`가 있는지 확인.
+2. **보안 (중요)**
+   - ✅ 완료: Google 로그인(강아지 잠금 교체), `allowedUsers/{이메일}` 허용 목록, `firestore.rules` 게시 (하연이가 콘솔 설정을 마쳤다고 알려줌)
+   - ⬜ 남음: **컨설팅 함수(`netlify/functions/consult.js`)가 로그인 확인 없이 열려 있어.** 주소를 아는 누구나 하연이 API 키로 Claude를 호출할 수 있어. 요청에 Firebase 로그인 토큰을 실어 보내고, 함수에서 검증 + 허용 목록 확인을 하게 바꿔야 해. 그 전에 Anthropic 콘솔에서 월 사용 한도를 낮게 걸어두면 안전해.
+   - ⬜ 확인: Firebase Authentication에서 익명 로그인이 꺼져 있는지.
 3. **지역 분류 개선** (`DESTINATIONS`, `matchDestination`) — PR: hayeon/region-classify
    - 매출 대부분이 '기타'로 빠져서 인사이트 '종합 TOP 10' 1위가 '기타'로 나왔어.
    - 사전에 없는 지명: 제천, 설악산, 청송, 다카마쓰, 나오시마, 마쓰야마, 나고야, LA, 라스베가스, 그랜드캐년, 샌프란시스코, 요세미티, 인스파이어(인천), 북한산(서울) 등
