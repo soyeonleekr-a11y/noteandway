@@ -1,0 +1,13 @@
+# 설치·빌드 결과물
+node_modules/
+dist/
+
+# 로컬 전용 (비밀값·개인 메모)
+.env
+.env.*
+.netlify/
+CLAUDE.local.md
+
+# OS
+.DS_Store
+Thumbs.db
