@@ -127,7 +127,20 @@ function matchDestination(text) {
   return best ? { name: best.d.name, region: best.d.region } : null;
 }
 // 수동 태그는 Firestore "region-tags"에 { 태그키: { region, destination } } 형태로 저장돼요.
-function productTagKey(platform, name) { return `product::${platform}::${normalizeNameKey(name)}`; }
+// 상품 태그 키는 '핵심 이름'(productGroupKey) 기준이라, 문구만 다른 이름들이 같은 태그를 같이 써요.
+function productTagKey(platform, name) { return `product::${platform}::${productGroupKey(name)}`; }
+// 상품 합치기 전에는 원래 이름 그대로 태그를 저장했어요. 그때 지정한 태그도 계속 읽을 수 있게 같이 찾아봐요.
+function legacyProductTagKey(platform, name) { return `product::${platform}::${normalizeNameKey(name)}`; }
+function productTagKeys(platform, group) {
+  const keys = [productTagKey(platform, group.name), ...group.variants.map((v) => legacyProductTagKey(platform, v))];
+  return [...new Set(keys)];
+}
+// 묶인 상품(group)의 지역: 새 키 → 예전 키 순서로 직접 지정한 태그를 찾고, 없으면 사전으로 추정해요.
+function classifyProduct(platform, group, tags) {
+  const keys = productTagKeys(platform, group);
+  const hit = keys.find((k) => tags?.[k]);
+  return classifyText(group.name, tags, hit || keys[0]);
+}
 function postTagKey(title) { return `post::${normalizeNameKey(title)}`; }
 // 직접 지정한 지역이 있으면 그걸 쓰고, 없으면 사전으로 추정해요.
 function classifyText(text, tags, tagKey) {
@@ -143,16 +156,23 @@ function matchProductType(text) {
   return found ? found[0] : null;
 }
 // 플랫폼 매출 상품의 유형. 이름에 키워드가 없어도 플랫폼별 규칙으로 알아낼 수 있는 건 여기서 처리해요.
-function classifyProductType(platform, name) {
+// category: 엑셀의 '상품군' 열(마이리얼트립). 키워드로 못 알아낸 상품은 상품군을 그대로 보여줘요.
+function classifyProductType(platform, name, category) {
   if (platform === "마이리얼트립" && ESIM_PLAIN_NAMES.has(normalizeNameKey(name))) return "이심";
-  return matchProductType(name);
+  return matchProductType(name) || (category ? String(category).trim() : null);
 }
-// 상품명 옆에 유형 배지를 붙여서 보여줘요. (유형을 모르면 이름만)
-function ProductName({ name, type }) {
+// 상품명 옆에 유형 배지를 붙여서 보여줘요. 여러 이름이 하나로 묶였으면 '묶음 N' 배지도 붙여요.
+function ProductName({ name, type, variants }) {
+  const merged = variants && variants.length > 1;
   return (
     <span className="product-name">
       {name}
       {type && <span className="type-badge">{type}</span>}
+      {merged && (
+        <span className="group-badge" title={`하나로 묶은 이름 ${variants.length}개\n${variants.map((v) => `· ${v}`).join("\n")}`}>
+          묶음 {variants.length}
+        </span>
+      )}
     </span>
   );
 }
@@ -172,7 +192,62 @@ function normalizeProduct(prod) {
   const totalRevenue = prod.totalRevenue != null ? prod.totalRevenue : (prod.revenue || 0);
   const qty = prod.qty != null ? prod.qty : 1;
   const unitRevenue = prod.unitRevenue != null ? prod.unitRevenue : (qty ? totalRevenue / qty : totalRevenue);
-  return { name: prod.name, qty, unitRevenue, totalRevenue };
+  return { name: prod.name, qty, unitRevenue, totalRevenue, category: prod.category || null };
+}
+
+// ───────── 상품 합치기 ─────────
+// 비교용 '핵심 이름': 대괄호 등 괄호 속 홍보 문구, ★…★ 문구, 이모지·기호, 띄어쓰기를 빼요.
+// 예) "[단독특가] 상하이 우전 수향마을 야경투어 ★한국어 가이드★" 와 "상하이 우전수향마을 야경 투어" → 같은 상품
+// 소괄호 ( )는 "(1인)", "(왕복)"처럼 상품을 구분하는 정보일 때가 많아서 남겨둬요.
+function productGroupKey(name) {
+  const core = String(name || "").normalize("NFKC")
+    .replace(/\[[^\]]*\]|【[^】]*】|「[^」]*」|『[^』]*』|〔[^〕]*〕|〈[^〉]*〉|《[^》]*》/g, " ")
+    .replace(/[★☆][^★☆]*[★☆]/g, " ")
+    .replace(/\p{Extended_Pictographic}|[★☆♥♡❤♪♬※●○◆◇■□▶►▷▲△▼▽✔✓·•|~～!！]/gu, " ")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+  return core || normalizeNameKey(name).toLowerCase(); // 전부 지워지면(이름이 홍보 문구뿐이면) 원래 이름으로 비교해요
+}
+// 같은 핵심 이름인 상품을 한 줄로 합쳐요. 대표 이름은 수익이 가장 큰 이름이고, 묶인 이름들은 variants 에 남겨요.
+// 저장된 원본 데이터는 그대로 두고 화면에서만 합쳐서, 잘못 묶이면 productGroupKey 만 고치면 돼요.
+function groupProducts(products) {
+  const map = {};
+  (products || []).forEach((raw) => {
+    const p = normalizeProduct(raw);
+    const key = productGroupKey(p.name);
+    if (!map[key]) map[key] = { qty: 0, totalRevenue: 0, category: null, byName: {} };
+    const g = map[key];
+    g.qty += p.qty;
+    g.totalRevenue += p.totalRevenue;
+    if (p.category && !g.category) g.category = p.category;
+    const nk = normalizeNameKey(p.name);
+    if (!g.byName[nk]) g.byName[nk] = { name: p.name, totalRevenue: 0, qty: 0 };
+    g.byName[nk].totalRevenue += p.totalRevenue;
+    g.byName[nk].qty += p.qty;
+  });
+  return Object.values(map).map((g) => {
+    const names = Object.values(g.byName).sort((a, b) => b.totalRevenue - a.totalRevenue || b.qty - a.qty);
+    return {
+      name: names[0].name,
+      variants: names.map((n) => n.name),
+      qty: g.qty,
+      totalRevenue: g.totalRevenue,
+      unitRevenue: g.qty ? g.totalRevenue / g.qty : g.totalRevenue,
+      category: g.category,
+    };
+  });
+}
+
+// ───────── 플랫폼별 엑셀 열 이름 ─────────
+// 열 이름을 정확히 아는 플랫폼은 여기에 적어두고, 그 이름(띄어쓰기 무시)으로만 찾아요.
+// 비슷한 단어로 찾으면 '판매 금액'(고객 결제액)을 수익으로 잘못 읽을 수 있어서예요.
+// 여기에 없는 플랫폼은 예전처럼 '상품'·'수익/매출/금액'·'수량' 단어가 든 첫 열을 써요.
+const PLATFORM_COLUMNS = {
+  "마이리얼트립": { name: "상품명", revenue: "정산 예상 금액", qty: "판매 수량", category: "상품군" },
+};
+function exactHeader(row, header) {
+  const want = String(header).replace(/\s+/g, "");
+  return Object.keys(row || {}).find((k) => String(k).replace(/\s+/g, "") === want) || null;
 }
 // 상품명이 눈으로는 같아 보여도 공백/특수문자 차이로 다른 문자열일 수 있어서,
 // 합치는 기준(키)으로 쓸 때는 이 함수로 정규화해요. 화면에는 원래 이름을 그대로 보여줘요.
@@ -426,8 +501,10 @@ export default function App() {
     await safeSet("blog-names", next);
   }
   // tag가 null이면 직접 지정을 해제하고 사전 자동 분류로 돌아가요.
-  async function updateRegionTag(key, tag) {
+  // cleanupKeys: 같은 상품의 예전 방식 태그 키들. 새로 저장하거나 해제할 때 같이 지워서 남지 않게 해요.
+  async function updateRegionTag(key, tag, cleanupKeys = []) {
     const next = { ...regionTags };
+    cleanupKeys.forEach((k) => { if (k !== key) delete next[k]; });
     if (tag) next[key] = tag; else delete next[key];
     setRegionTags(next);
     const ok = await safeSet("region-tags", next);
@@ -696,14 +773,28 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
       if (!rows.length) throw new Error("empty");
-      const nameKey = findKey(rows[0], ["상품", "품목", "product", "Product"]);
-      const revKey = findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
-      const qtyKey = findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
-      if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
+      const profile = PLATFORM_COLUMNS[platform];
+      let nameKey, revKey, qtyKey, categoryKey;
+      if (profile) {
+        // 열 이름을 아는 플랫폼: 정확한 이름으로만 찾고, 없으면 엉뚱한 열을 읽지 않게 멈춰요.
+        nameKey = exactHeader(rows[0], profile.name);
+        revKey = exactHeader(rows[0], profile.revenue);
+        qtyKey = profile.qty ? exactHeader(rows[0], profile.qty) : null;
+        categoryKey = profile.category ? exactHeader(rows[0], profile.category) : null;
+        const missing = [[nameKey, profile.name], [revKey, profile.revenue]].filter(([k]) => !k).map(([, h]) => `'${h}'`);
+        if (missing.length) throw new Error(`${platform} 엑셀에서 ${missing.join(", ")} 열을 찾지 못했어요. 엑셀 첫 줄의 열 이름을 확인해주세요.`);
+      } else {
+        nameKey = findKey(rows[0], ["상품", "품목", "product", "Product"]);
+        revKey = findKey(rows[0], ["수익", "매출", "금액", "revenue", "Revenue"]);
+        qtyKey = findKey(rows[0], ["수량", "판매", "qty", "Qty"]);
+        categoryKey = null;
+        if (!nameKey || !revKey) throw new Error("컬럼을 찾을 수 없어요 (상품명 / 수익금 열이 필요해요)");
+      }
 
       // 엑셀은 보통 한 줄 = 거래 1건이라 수량 열이 따로 없을 수 있어요.
       // 그래서 같은 상품명은 한 줄로 합치고, 수량 열이 없으면 등장 횟수를 판매수량으로 계산해요.
       // (공백/특수문자 차이로 다른 문자열처럼 보이는 경우까지 대비해 정규화한 키로 합쳐요)
+      // 문구만 다른 이름끼리 묶는 건 화면에서 해요(groupProducts). 저장할 땐 원래 이름을 살려둬요.
       const grouped = {};
       rows.forEach((r) => {
         const name = String(r[nameKey]).trim();
@@ -714,6 +805,8 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
         if (!grouped[key]) grouped[key] = { name, qty: 0, totalRevenue: 0 };
         grouped[key].qty += qty;
         grouped[key].totalRevenue += revenue;
+        const category = categoryKey ? String(r[categoryKey]).trim() : "";
+        if (category && !grouped[key].category) grouped[key].category = category; // Firestore는 undefined를 못 저장해서, 있을 때만 넣어요
       });
       const products = Object.values(grouped).map((p) => ({
         ...p,
@@ -722,9 +815,11 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
       if (!products.length) throw new Error("읽을 수 있는 상품 데이터가 없어요");
       const total = products.reduce((s, p) => s + p.totalRevenue, 0);
 
-      const next = { ...platformData, [platform]: { ...(platformData[platform] || {}), [month]: { products, total } } };
+      // 나중에 "이 숫자 어느 열에서 왔지?"를 확인할 수 있게, 읽은 열 이름을 같이 저장해요.
+      const source = { name: nameKey, revenue: revKey, qty: qtyKey || null, category: categoryKey || null, rows: rows.length, uploadedAt: new Date().toISOString() };
+      const next = { ...platformData, [platform]: { ...(platformData[platform] || {}), [month]: { products, total, source } } };
       await updatePlatformData(next);
-      showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료`);
+      showToast(`${platform} · ${formatMonthLabel(month)} 매출 상품 ${products.length}종 반영 완료 (수익: '${revKey}' 열)`);
     } catch (err) {
       showToast(err.message || "엑셀 파일을 읽는 데 실패했어요", "err");
     } finally {
@@ -750,23 +845,15 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
 
   const sortedProducts = useMemo(() => {
     if (!current) return [];
-    // 저장된 데이터에 같은 상품명이 여러 줄로 남아있을 수 있어서(예전 업로드 등),
-    // 화면에 보여줄 때도 한 번 더 정규화한 이름 기준으로 합쳐서 표시해요.
-    const grouped = {};
-    current.products.forEach((raw) => {
-      const p = normalizeProduct(raw);
-      const key = normalizeNameKey(p.name);
-      if (!grouped[key]) grouped[key] = { name: p.name, qty: 0, totalRevenue: 0 };
-      grouped[key].qty += p.qty;
-      grouped[key].totalRevenue += p.totalRevenue;
-    });
-    const arr = Object.values(grouped).map((p) => ({
-      ...p,
-      unitRevenue: p.qty ? p.totalRevenue / p.qty : p.totalRevenue,
-    }));
+    // 문구만 다른 같은 상품(예: [특가]·★ 문구 차이)은 핵심 이름 기준으로 한 줄로 합쳐서 보여줘요.
+    const arr = groupProducts(current.products);
     arr.sort((a, b) => (sortDir === "desc" ? b[sortField] - a[sortField] : a[sortField] - b[sortField]));
     return arr;
   }, [current, sortField, sortDir]);
+  const mergedCount = sortedProducts.filter((p) => p.variants.length > 1).length;
+  const profile = PLATFORM_COLUMNS[platform];
+  // 열 이름 지정 전에 올린 달은 수익 열을 잘못 읽었을 수 있어요. (마이리얼트립: '판매 금액'을 수익으로 읽었을 가능성)
+  const needsReupload = !!(current && profile && !current.source);
 
   const visibleProducts = showAll ? sortedProducts : sortedProducts.slice(0, PAGE_SIZE);
   const hiddenCount = sortedProducts.length - visibleProducts.length;
@@ -792,10 +879,25 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
             <button className="ghost-btn" onClick={handleClear}><Trash2 size={14} /> 이 달 데이터 삭제</button>
           )}
         </div>
-        <div className="hint">헤더에 <b>상품명</b>과 <b>수익금(매출)</b> 열이 있으면 자동 인식해요. 같은 상품명은 자동으로 합쳐지고, 수량 열이 없으면 거래 건수를 판매수량으로 계산해요.</div>
+        {profile ? (
+          <div className="hint">
+            {platform} 엑셀은 <b>{profile.name}</b>, <b>{profile.revenue}</b>(수익), <b>{profile.qty}</b>{profile.category && <>, <b>{profile.category}</b></>} 열을 이름 그대로 찾아요. 문구만 다른 같은 상품은 한 줄로 묶어서 보여줘요.
+          </div>
+        ) : (
+          <div className="hint">헤더에 <b>상품명</b>과 <b>수익금(매출)</b> 열이 있으면 자동 인식해요. 같은 상품명은 자동으로 합쳐지고, 수량 열이 없으면 거래 건수를 판매수량으로 계산해요.</div>
+        )}
 
         {current ? (
           <div className="rev-summary">
+            {needsReupload && (
+              <div className="warn-box">
+                <AlertCircle size={15} />
+                <div>
+                  <b>이 달은 정산 엑셀을 다시 올려주세요.</b><br />
+                  예전 방식으로 올린 데이터라 수익이 '{profile.revenue}'가 아닌 다른 열(예: 판매 금액)로 계산됐을 수 있어요. 같은 달을 다시 올리면 덮어써져요.
+                </div>
+              </div>
+            )}
             <div className="row-between" style={{ marginBottom: 10 }}>
               <div className="rev-total">{platform} · {formatMonthLabel(month)} 총매출 <SplitNumber value={formatWon(current.total)} size="sm" /></div>
               <select
@@ -809,13 +911,22 @@ function RevenueTab({ months, platformData, updatePlatformData, showToast }) {
                 <option value="qty-asc">판매수량 적은순</option>
               </select>
             </div>
+            {(current.source || mergedCount > 0) && (
+              <div className="hint source-hint">
+                {current.source && (
+                  <>읽은 열: 상품명 <b>{current.source.name}</b> · 수익 <b>{current.source.revenue}</b>{current.source.qty && <> · 수량 <b>{current.source.qty}</b></>}</>
+                )}
+                {current.source && mergedCount > 0 && " · "}
+                {mergedCount > 0 && <>문구만 다른 이름을 묶은 상품 <b>{mergedCount}개</b> ('묶음' 배지에 마우스를 올리면 원래 이름이 보여요)</>}
+              </div>
+            )}
             <table className="table">
               <thead><tr><th>순위</th><th>상품명</th><th>판매수량</th><th>개별 수익금</th><th>총 수익금</th></tr></thead>
               <tbody>
                 {visibleProducts.map((p, i) => (
                   <tr key={`${p.name}-${i}`} className={i === 0 ? "top-row" : ""}>
                     <td>{i + 1}</td>
-                    <td><ProductName name={p.name} type={classifyProductType(platform, p.name)} /></td>
+                    <td><ProductName name={p.name} type={classifyProductType(platform, p.name, p.category)} variants={p.variants} /></td>
                     <td>{p.qty}</td>
                     <td>{formatWon(p.unitRevenue)}</td>
                     <td>{formatWon(p.totalRevenue)}</td>
@@ -1253,30 +1364,21 @@ recommendations는 해외 2곳, 국내 2곳 총 4개로 만들어줘.`;
 function InsightTab({ months, platformData, postRecords, blogNames, regionTags, updateRegionTag }) {
   const [scope, setScope] = useState("all");
 
-  // 같은 상품(플랫폼+상품명)이 여러 달에 걸쳐 등장해도 하나로 합쳐서 중복 없이 집계해요.
+  // 같은 상품이 여러 달에 걸쳐, 또는 문구만 다른 이름으로 여러 줄 나와도 플랫폼별로 하나로 합쳐서 집계해요.
   const allProducts = useMemo(() => {
-    const map = {};
+    const out = [];
     PLATFORMS.forEach((p) => {
-      const monthsObj = platformData[p] || {};
-      Object.entries(monthsObj).forEach(([m, data]) => {
+      const list = [];
+      Object.entries(platformData[p] || {}).forEach(([m, data]) => {
         if (scope !== "all" && m !== scope) return;
-        (data.products || []).forEach((raw) => {
-          const prod = normalizeProduct(raw);
-          const key = `${p}::${normalizeNameKey(prod.name)}`;
-          if (!map[key]) {
-            const c = classifyText(prod.name, regionTags, productTagKey(p, prod.name));
-            map[key] = {
-              name: prod.name, platform: p, qty: 0, totalRevenue: 0,
-              region: c.region, destination: c.destination,
-              productType: classifyProductType(p, prod.name),
-            };
-          }
-          map[key].qty += prod.qty;
-          map[key].totalRevenue += prod.totalRevenue;
-        });
+        list.push(...(data.products || []));
+      });
+      groupProducts(list).forEach((g) => {
+        const c = classifyProduct(p, g, regionTags);
+        out.push({ ...g, platform: p, region: c.region, destination: c.destination, productType: classifyProductType(p, g.name, g.category) });
       });
     });
-    return Object.values(map);
+    return out;
   }, [platformData, scope, regionTags]);
 
   const allPosts = useMemo(() => {
@@ -1295,13 +1397,11 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
   const taggableItems = useMemo(() => {
     const map = {};
     PLATFORMS.forEach((p) => {
-      Object.values(platformData[p] || {}).forEach((data) => {
-        (data.products || []).forEach((raw) => {
-          const prod = normalizeProduct(raw);
-          const key = productTagKey(p, prod.name);
-          if (!map[key]) map[key] = { key, kind: "상품", name: prod.name, source: p, revenue: 0, views: 0, ...classifyText(prod.name, regionTags, key) };
-          map[key].revenue += prod.totalRevenue;
-        });
+      const list = Object.values(platformData[p] || {}).flatMap((data) => data.products || []);
+      groupProducts(list).forEach((g) => {
+        const key = productTagKey(p, g.name);
+        // cleanupKeys: 저장·해제할 때 예전 방식(원래 이름) 태그도 같이 정리하려고 들고 있어요.
+        map[key] = { key, cleanupKeys: productTagKeys(p, g), kind: "상품", name: g.name, variants: g.variants, source: p, revenue: g.totalRevenue, views: 0, ...classifyProduct(p, g, regionTags) };
       });
     });
     blogNames.forEach((b) => {
@@ -1381,7 +1481,7 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
                       <td>{i + 1}</td>
                       <td><span className={regionBadge(p.region)}>{p.region}</span></td>
                       <td>{p.destination}</td>
-                      <td><ProductName name={p.name} type={p.productType} /></td>
+                      <td><ProductName name={p.name} type={p.productType} variants={p.variants} /></td>
                       <td>{p.platform}</td>
                       <td>{formatWon(p.totalRevenue)}</td>
                     </tr>
@@ -1402,7 +1502,7 @@ function InsightTab({ months, platformData, postRecords, blogNames, regionTags, 
                       <td>{i + 1}</td>
                       <td><span className={regionBadge(p.region)}>{p.region}</span></td>
                       <td>{p.destination}</td>
-                      <td><ProductName name={p.name} type={p.productType} /></td>
+                      <td><ProductName name={p.name} type={p.productType} variants={p.variants} /></td>
                       <td>{p.platform}</td>
                       <td>{p.qty.toLocaleString("ko-KR")}건</td>
                     </tr>
@@ -1569,7 +1669,7 @@ function TagRow({ item, onSave }) {
     const d = DESTINATIONS.find((x) => x.name === v.trim());
     if (d) setRegion(d.region);
   }
-  async function run(tag) { setSaving(true); await onSave(item.key, tag); setSaving(false); }
+  async function run(tag) { setSaving(true); await onSave(item.key, tag, item.cleanupKeys || []); setSaving(false); }
 
   const value = destination.trim();
   const unchanged = known && value === item.destination && region === item.region;
@@ -1580,6 +1680,7 @@ function TagRow({ item, onSave }) {
         {item.name}
         <div className="tag-sub">
           {item.source} · 지금: {item.destination}{item.manual ? " (직접 지정)" : known ? " (자동)" : ""}
+          {item.variants?.length > 1 && ` · 비슷한 이름 ${item.variants.length}개를 묶었어요`}
         </div>
       </td>
       <td className="num-cell">{item.kind === "상품" ? formatWon(item.revenue) : `${item.views.toLocaleString("ko-KR")}회`}</td>
@@ -1796,6 +1897,18 @@ function Style() {
         letter-spacing: 0.3px; white-space: nowrap;
       }
       .table .top-row .type-badge { font-weight: 700; }
+      .group-badge {
+        display: inline-block; font-size: 10px; font-weight: 500; line-height: 1; padding: 3px 6px;
+        border-radius: 4px; background: rgba(147,162,188,0.14); color: #93A2BC; white-space: nowrap; cursor: help;
+      }
+      .warn-box {
+        display: flex; gap: 10px; align-items: flex-start; margin-bottom: 14px; padding: 12px 14px;
+        border-radius: 8px; border: 1px solid rgba(232,163,61,0.45); background: rgba(232,163,61,0.08);
+        color: #F4F1E8; font-size: 12px; line-height: 1.6;
+      }
+      .warn-box svg { color: #E8A33D; flex-shrink: 0; margin-top: 2px; }
+      .warn-box b { color: #E8A33D; }
+      .source-hint { margin-top: 0; margin-bottom: 10px; }
 
       .tag-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
       .seg { display: flex; gap: 6px; }
